@@ -31,6 +31,9 @@
 #include "raylib.h"
 #include "raymath.h"
 
+// macro deffinitions
+#define TEXT_FONT_SIZE 32
+
 #define PLAYER_GRAVITY_X 0.0
 #define PLAYER_GRAVITY_Y 24.0
 #define PLAYER_SPEED 512.0f
@@ -38,8 +41,10 @@
 #define OBSTACLE_CAPACITY 8
 #define OBSTACLE_WIDTH 320
 #define OBSTACLE_HEIGHT 512
-#define OBSTACLE_DIST_REDUCTION 4
+#define OBSTACLE_DIST_INITIAL GetScreenHeight() - 64.0f
+#define OBSTACLE_DIST_REDUCTION 8
 
+// Forward declarations
 struct Player;
 struct Obstacle;
 struct ObstacleList;
@@ -47,11 +52,15 @@ struct ObstacleList;
 typedef enum {
     STATE_START,
     STATE_GAMEPLAY,
-    STATE_GAMEOVER
+    STATE_GAMEOVER,
+    STATE_PAUSE,
+    STATE_RESUME
 } GameplayStateMachine;
 
 typedef struct Player {
     Vector2 position;
+    Vector2 position_prev;
+
     Vector2 velocity;
     Vector2 physical_size;
     
@@ -67,6 +76,7 @@ void playerUpdate();
 void playerRender();
 
 void playerSetPosition(Vector2 position);
+void playerIncrementPosition(Vector2 incrementation);
 void playerSetVelocity(Vector2 velocity);
 
 void playerCheckCollisions();
@@ -120,6 +130,9 @@ struct {
     } Debug;
 } GlobalState;
 
+const char* stateMachineGetName();
+void stateMachineSet(GameplayStateMachine state_machine);
+
 void debugRender();
 void debugRenderData();
 void debugRenderCollisions();
@@ -141,6 +154,8 @@ int main(int argc, char** argv) {
     // - game's audio device;
     InitWindow(WIDTH, HEIGHT, TextFormat("Raylib %s - %s", RAYLIB_VERSION, TITLE));
     InitAudioDevice();
+
+    SetExitKey(KEY_NULL);
 
     GlobalState.StateMachineGlobals.gameplay_state_machine = STATE_START;
 
@@ -177,7 +192,7 @@ int main(int argc, char** argv) {
 
                 if(IsKeyPressed(KEY_SPACE) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
                     playerSetVelocity((Vector2) { 0.0f, -PLAYER_GRAVITY_Y * 16.0f * GetFrameTime()});
-                    GlobalState.StateMachineGlobals.gameplay_state_machine = STATE_GAMEPLAY;
+                    stateMachineSet(STATE_GAMEPLAY);
                 }
 
             } break;
@@ -188,13 +203,27 @@ int main(int argc, char** argv) {
                 obstacleListUpdate();
                 GlobalState.PlayerGlobals.camera.target.x += PLAYER_SPEED * GetFrameTime();
 
+                if(IsKeyPressed(KEY_ESCAPE)) {
+                    stateMachineSet(STATE_PAUSE);
+                }
+
                 if(GlobalState.PlayerGlobals.player.game_over) {
-                    GlobalState.StateMachineGlobals.gameplay_state_machine = STATE_GAMEOVER;
+                    stateMachineSet(STATE_GAMEOVER);
                 }
             } break;
 
             case STATE_GAMEOVER: {
 
+            } break;
+
+            case STATE_PAUSE: {
+                if(IsKeyPressed(KEY_ESCAPE)) {
+                    stateMachineSet(STATE_RESUME);
+                }
+            } break;
+
+            case STATE_RESUME: {
+                    stateMachineSet(STATE_GAMEPLAY);
             } break;
         }
 
@@ -239,7 +268,6 @@ Player playerInit(Vector2 position) {
 }
 
 void playerUpdate() {
-
     // Firstly, we apply our physics forces ..
     GlobalState.PlayerGlobals.player.velocity = Vector2Add(GlobalState.PlayerGlobals.player.velocity, (Vector2) { PLAYER_GRAVITY_X * GetFrameTime(), PLAYER_GRAVITY_Y * GetFrameTime() });
 
@@ -258,7 +286,7 @@ void playerUpdate() {
     }
 
     // Lastly, we apply all the forces to our position.
-    GlobalState.PlayerGlobals.player.position = Vector2Add(GlobalState.PlayerGlobals.player.position, GlobalState.PlayerGlobals.player.velocity);
+    playerIncrementPosition(GlobalState.PlayerGlobals.player.velocity);
 }
 
 void playerRender() {
@@ -284,7 +312,13 @@ void playerRender() {
 }
 
 void playerSetPosition(Vector2 position) {
+    GlobalState.PlayerGlobals.player.position_prev = GlobalState.PlayerGlobals.player.position;
     GlobalState.PlayerGlobals.player.position = position;
+}
+
+void playerIncrementPosition(Vector2 incrementation) {
+    GlobalState.PlayerGlobals.player.position_prev = GlobalState.PlayerGlobals.player.position;
+    GlobalState.PlayerGlobals.player.position = Vector2Add(GlobalState.PlayerGlobals.player.position, incrementation);
 }
 
 void playerSetVelocity(Vector2 velocity) {
@@ -360,7 +394,7 @@ ObstacleList obstacleListInit() {
     ObstacleList result = { 0 };
 
     Vector2 obs_position = { 0.0f, GetScreenHeight() / 2.0f };
-    float distance = 640.0f;
+    float distance = OBSTACLE_DIST_INITIAL;
 
     for(int obstacle_index = 0; obstacle_index < OBSTACLE_CAPACITY; obstacle_index++) {
         int obstacle_move_direction = 0;
@@ -434,6 +468,20 @@ void obstacleListLoopObstacles() {
     }
 }
 
+const char* stateMachineGetName() {
+    switch (GlobalState.StateMachineGlobals.gameplay_state_machine) {
+        case STATE_START: return "STATE_START";
+        case STATE_GAMEPLAY: return "STATE_GAMEPLAY";
+        case STATE_GAMEOVER: return "STATE_GAMEOVER";
+        case STATE_PAUSE: return "STATE_PAUSE";
+        case STATE_RESUME: return "STATE_RESUME";
+    }
+}
+
+void stateMachineSet(GameplayStateMachine state_machine) {
+    GlobalState.StateMachineGlobals.gameplay_state_machine = state_machine;
+}
+
 void debugRender() {
     debugRenderData();
     debugRenderCollisions();
@@ -444,16 +492,22 @@ void debugRenderData() {
         return;
     }
 
+    SetTextLineSpacing(TEXT_FONT_SIZE);
     DrawText(
         TextFormat(
-            "FPS: %i\nAlive: %s\nPoints: %i",
+            "Game:\n> FPS: %i\n> State: %s\n\nPlayer:\n> Position: %.2f, %.2f\n> Velocity: %.2f, %.2f\n> Alive: %s\n> Points: %i\n",
             GetFPS(),
+            stateMachineGetName(),
+            GlobalState.PlayerGlobals.player.position.x,
+            GlobalState.PlayerGlobals.player.position.y,
+            GlobalState.PlayerGlobals.player.velocity.x,
+            GlobalState.PlayerGlobals.player.velocity.y,
             GlobalState.PlayerGlobals.player.game_over ? "false" : "true",
             GlobalState.PlayerGlobals.player.points
         ),
-        0,
-        0,
-        16,
+        4,
+        4,
+        TEXT_FONT_SIZE,
         DARKGREEN
     );
 }
