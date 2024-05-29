@@ -107,7 +107,7 @@ if (LINUX)
     target_link_options(${PROJECT_NAME} PRIVATE -static-libgcc -static-libstdc++)
 
     # LINUX: Setting the target executable's suffix (for linux: *.out).
-    set_target_properties(${exec} PROPERTIES SUFFIX ".out")
+    set_target_properties(${PROJECT_NAME} PROPERTIES SUFFIX ".out")
 
 endif()
 
@@ -122,7 +122,7 @@ if (WIN32)
     target_link_options(${PROJECT_NAME} PRIVATE -static)
 
     # WINDOWS: Setting the target executable's suffix (for Win32: *.exe).
-    set_target_properties(${exec} PROPERTIES SUFFIX ".exe")
+    set_target_properties(${PROJECT_NAME} PROPERTIES SUFFIX ".exe")
 
 endif()
 
@@ -141,6 +141,6 @@ if (APPLE)
     target_link_libraries(${PROJECT_NAME} "-framework OpenGL")
 
     # APPLE: Setting the target executable's suffix (for MacOS: *.app).
-    set_target_properties(${exec} PROPERTIES SUFFIX ".app")
+    set_target_properties(${PROJECT_NAME} PROPERTIES SUFFIX ".app")
 
 endif()
