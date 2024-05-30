@@ -91,7 +91,15 @@ void playerSetVelocity(Vector2 velocity);
 
 void playerCheckCollisions();
 
+typedef enum {
+    COLLECTIBLE_COMMON = 0,
+    COLLECTLIBLE_RARE,
+    COLLECTLIBLE_LEGENDARY,
+    COLLECTIBLE_RARITY_COUNT
+} CollectibleRarity;
+
 typedef struct {
+    CollectibleRarity collectible_rarity;
     Vector2 position;
 } Collectible;
 
@@ -112,20 +120,18 @@ typedef struct Obstacle {
     Collectible collectible;
 } Obstacle;
 
-Obstacle obstacleInit(Vector2 position, float distance);
+Obstacle obstacleInit(Vector2 position, float distance, bool spawn_collectible);
 void obstacleRender(Obstacle* obstacle);
 
+Collectible collectibleInit(Obstacle* obstacle);
 void collectibleRender(Obstacle* obstacle);
 
 typedef struct ObstacleList {
     Obstacle list[OBSTACLE_CAPACITY];
-
-    int count;
-    int index_of_first_obstacle;
-    int index_of_last_obstacle;
 } ObstacleList;
 
 ObstacleList obstacleListInit();
+void obstacleInitData(Obstacle* obstacle, Vector2* position, float* distance);
 void obstacleListUpdate();
 void obstacleListRender();
 void obstacleListLoopObstacles();
@@ -410,8 +416,8 @@ void playerRender() {
 
     DrawRectanglePro(
         (Rectangle) { 
-            player->position.x,
-            player->position.y,
+            round(player->position.x),
+            round(player->position.y),
             player->sprite_size.x,
             player->sprite_size.y
         }, 
@@ -437,7 +443,6 @@ void playerSetVelocity(Vector2 velocity) {
 
 void playerCheckCollisions() {
     Player* player = &GlobalState.PlayerGlobals.player;
-    const int OBSTACLES_INDEX_FIRST = GlobalState.ObstacleGlobals.obstacle_list.index_of_first_obstacle;
 
     for(int obstacles_to_check = 0; obstacles_to_check < OBSTACLE_CAPACITY; obstacles_to_check++) {
         Obstacle* obstacle = &GlobalState.ObstacleGlobals.obstacle_list.list[obstacles_to_check];
@@ -452,14 +457,21 @@ void playerCheckCollisions() {
 
         if(obstacle->has_collectible) {
             if(CheckCollisionCircleRec(obstacle->collectible.position, COLLECTLIBLE_RADIUS, player_rect)) {
-                player->points++;
+                switch (obstacle->collectible.collectible_rarity) {
+                    case COLLECTIBLE_COMMON:            player->points++;    break;
+                    case COLLECTLIBLE_RARE:             player->points += 2; break;
+                    case COLLECTLIBLE_LEGENDARY:        player->points += 4; break;
+                    case COLLECTIBLE_RARITY_COUNT:      player->points += 0; break;
+                    default:                            player->points += 0; break;
+                }
+
                 obstacle->has_collectible = false;
             }
         }
     }
 }
 
-Obstacle obstacleInit(Vector2 position, float distance){
+Obstacle obstacleInit(Vector2 position, float distance, bool spawn_collectible){
     Obstacle result = {
         .position = Vector2Clamp(
             position, 
@@ -477,23 +489,11 @@ Obstacle obstacleInit(Vector2 position, float distance){
     result.point1.y = position.y + (distance / 2.0f);
     
     // Simple check if there is a space for collectible to be spawned
-    if(distance > COLLECTLIBLE_RADIUS * 2.0f) {
+    if(distance > COLLECTLIBLE_RADIUS * 2.0f && spawn_collectible) {
         // RNG that picks if the collectible will be spawned
         if(GetRandomValue(0, COLLECTIBLE_SPAWN_CHANCE) == COLLECTIBLE_SPAWN_CHANCE_VALUE) {
             result.has_collectible = true;
-            result.collectible = (Collectible) { 
-                (Vector2) { 
-                    position.x - GetRandomValue(
-                        (OBSTACLE_WIDTH / -2.0f) + (COLLECTLIBLE_RADIUS * 2.0f), 
-                        (OBSTACLE_WIDTH / 2.0f) - (COLLECTLIBLE_RADIUS * 2.0f)
-                    ),
-                    // This formula either substracts or add a value, which is in between the point0 and point1 from the position.y value. It accounts the radius of the collectible
-                    position.y - GetRandomValue(
-                        (distance / -2.0f) + (COLLECTLIBLE_RADIUS * 2.0f), 
-                        (distance / 2.0f) - (COLLECTLIBLE_RADIUS * 2.0f)
-                    )
-                }
-            };
+            result.collectible = collectibleInit(&result);
         } 
     }
 
@@ -535,61 +535,140 @@ void obstacleRender(Obstacle* obstacle) {
 
 }
 
+Collectible collectibleInit(Obstacle* obstacle) {
+    Collectible result = (Collectible) { 
+        .position = (Vector2) { 
+            obstacle->position.x - GetRandomValue(
+                (OBSTACLE_WIDTH / -2.0f) + (COLLECTLIBLE_RADIUS * 2.0f), 
+                (OBSTACLE_WIDTH / 2.0f) - (COLLECTLIBLE_RADIUS * 2.0f)
+            ),
+            // This formula either substracts or add a value, which is in between the point0 and point1 from the position.y value. It accounts the radius of the collectible
+            obstacle->position.y - GetRandomValue(
+                (obstacle->distance / -2.0f) + (COLLECTLIBLE_RADIUS * 2.0f), 
+                (obstacle->distance / 2.0f) - (COLLECTLIBLE_RADIUS * 2.0f)
+            )
+        }
+    };
+
+    // 'collectible_rarity_random_index' picks the random value...
+    int collectible_rarity_random_index = GetRandomValue(0, 10);
+    // .. which then helps us assign the proper rarity to our collectible.
+
+    if(collectible_rarity_random_index >= 10 && collectible_rarity_random_index < 4) { // If 'collectible_rarity_random_index' is in range 10 - 5, then the rarity is COLLECTIBLE_COMMON (50%)
+        result.collectible_rarity = COLLECTIBLE_COMMON;
+    } else if(collectible_rarity_random_index >= 4 && collectible_rarity_random_index < 0) { // Otherwise, if 'collectible_rarity_random_index' is in range 4 - 1, then the rarity is COLLECTLIBLE_RARE (40%)
+        result.collectible_rarity = COLLECTLIBLE_RARE;
+    } else if(collectible_rarity_random_index <= 0) { // lastly, if rarity is exactly 0, then the rarity is COLLECTLIBLE_LEGENDARY (10%)
+        result.collectible_rarity = COLLECTLIBLE_LEGENDARY;
+    }
+
+    return result;
+}
+
 void collectibleRender(Obstacle* obstacle) {
     if(!obstacle || !obstacle->has_collectible) {
         return;
     }
 
-    DrawCircleV(
-        obstacle->collectible.position, 
-        COLLECTLIBLE_RADIUS, 
-        GOLD
-    );
+    switch(obstacle->collectible.collectible_rarity) {
+        case COLLECTIBLE_COMMON: {
+            DrawCircleV(
+                obstacle->collectible.position, 
+                COLLECTLIBLE_RADIUS, 
+                GOLD
+            );
 
-    DrawCircleLinesV(
-        obstacle->collectible.position, 
-        COLLECTLIBLE_RADIUS, 
-        BLACK
-    );
+            DrawCircleLinesV(
+                obstacle->collectible.position, 
+                COLLECTLIBLE_RADIUS, 
+                BLACK
+            );
+
+        } break;
+
+        case COLLECTLIBLE_RARE: {
+            DrawCircleV(
+                obstacle->collectible.position, 
+                COLLECTLIBLE_RADIUS, 
+                RED
+            );
+
+            DrawCircleLinesV(
+                obstacle->collectible.position, 
+                COLLECTLIBLE_RADIUS, 
+                BLACK
+            );
+
+        } break;
+
+        case COLLECTLIBLE_LEGENDARY: {
+            DrawCircleV(
+                obstacle->collectible.position, 
+                COLLECTLIBLE_RADIUS, 
+                BLUE
+            );
+
+            DrawCircleLinesV(
+                obstacle->collectible.position, 
+                COLLECTLIBLE_RADIUS, 
+                BLACK
+            );
+        } break;
+
+        case COLLECTIBLE_RARITY_COUNT: break;
+        default: {
+            
+        } break;
+    }
 }
 
 ObstacleList obstacleListInit() {
     ObstacleList result = { 0 };
 
-    Vector2 obs_position = { 0.0f, renderGetSize().y / 2.0f };
-    float distance = OBSTACLE_DIST_INITIAL;
+    Vector2 obstacle_position = { 0.0f, renderGetSize().y / 2.0f };
+    float obstacle_distance = OBSTACLE_DIST_INITIAL;
 
     for(int obstacle_index = 0; obstacle_index < OBSTACLE_CAPACITY; obstacle_index++) {
+        result.list[obstacle_index] = obstacleInit(obstacle_position, obstacle_distance, obstacle_index >= OBSTACLE_CAPACITY / 2);
+
         int obstacle_move_direction = 0;
-        int obstacle_shrink = 1;
 
         // RNG that picks the horizontal direction that the next obstacle will be placed (1 -> up; -1 -> down)
         do {
             obstacle_move_direction = GetRandomValue(-1, 1);
         } while(obstacle_move_direction == 0);
 
-        // RNG that picks if the next obstacle will be shrinked or extended
-        if(GetRandomValue(0, OBSTACLE_SHRINK_REVERSE_CHANCE) == OBSTACLE_SHRINK_REVERSE_CHANCE_VALUE) {
-            obstacle_shrink = -1; // The value -1 will extend the obstacle (make the distance bigger)
-        }
+        obstacle_position.x += OBSTACLE_WIDTH;
+        obstacle_position.y = result.list[OBSTACLE_CAPACITY - 2].position.y + obstacle_move_direction * (OBSTACLE_DIST_REDUCTION * 2);
+        obstacle_position.y = Clamp(obstacle_position.y, obstacle_distance / 2.0f, renderGetSize().y - obstacle_distance / 2.0f);
 
-        result.list[obstacle_index] = obstacleInit(obs_position, distance);
+        obstacle_distance = obstacle_distance >= 0.0f && obstacle_distance <= OBSTACLE_DIST_INITIAL ?
+            obstacle_distance - OBSTACLE_DIST_REDUCTION :
+            obstacle_distance;
 
-        obs_position.x += OBSTACLE_WIDTH;
-        obs_position.y = result.list[obstacle_index].position.y + obstacle_move_direction * (OBSTACLE_DIST_REDUCTION * 2);
-
-        if(distance >= 0.0f) {
-            distance -= OBSTACLE_DIST_REDUCTION * obstacle_shrink;
-        }
-
-        obs_position.y = Clamp(obs_position.y, distance / 2.0f, renderGetSize().y - distance / 2.0f);
     }
 
-    result.count = OBSTACLE_CAPACITY;
-    result.index_of_first_obstacle = 0;
-    result.index_of_last_obstacle = OBSTACLE_CAPACITY - 1;
-
     return result;
+}
+
+void obstacleInitData(Obstacle* obstacle, Vector2* position, float* distance) {
+    int obstacle_move_direction = 0;
+
+    // RNG that picks the horizontal direction that the next obstacle will be placed (1 -> up; -1 -> down)
+    do {
+        obstacle_move_direction = GetRandomValue(-1, 1);
+    } while(obstacle_move_direction == 0);
+
+    *position = (Vector2) {
+        obstacle->position.x + OBSTACLE_WIDTH,
+        obstacle->position.y + obstacle_move_direction * (OBSTACLE_DIST_REDUCTION * 2)
+    };
+
+    position->y = Clamp(position->y, position->y / 2.0f, renderGetSize().y - position->y / 2.0f);
+
+    *distance = obstacle->distance >= 0.0f && obstacle->distance <= OBSTACLE_DIST_INITIAL ?
+        obstacle->distance - OBSTACLE_DIST_REDUCTION :
+        obstacle->distance;
 }
 
 void obstacleListUpdate() {
@@ -598,48 +677,41 @@ void obstacleListUpdate() {
 
 void obstacleListRender() {
     for(int obstacle_index = 0; obstacle_index < OBSTACLE_CAPACITY; obstacle_index++) {
-        obstacleRender(&GlobalState.ObstacleGlobals.obstacle_list.list[obstacle_index]);
+        Obstacle* obstacle_current;
+        Obstacle* obstacle_next;
+
+        if(obstacle_index < OBSTACLE_CAPACITY - 1) {
+            obstacle_current = &GlobalState.ObstacleGlobals.obstacle_list.list[obstacle_index];
+            obstacle_next = &GlobalState.ObstacleGlobals.obstacle_list.list[obstacle_index + 1];
+        } 
+
+        DrawLineBezier(obstacle_current->point0, obstacle_next->point0, 2.0f, GRAY);
+        DrawLineBezier(obstacle_current->point1, obstacle_next->point1, 2.0f, GRAY);
+        collectibleRender(obstacle_current);
     }
 }
 
 void obstacleListLoopObstacles() {
-    Obstacle* obstacle_last = &GlobalState.ObstacleGlobals.obstacle_list.list[GlobalState.ObstacleGlobals.obstacle_list.index_of_last_obstacle];
-    Obstacle* obstacle_current = &GlobalState.ObstacleGlobals.obstacle_list.list[GlobalState.ObstacleGlobals.obstacle_list.index_of_first_obstacle];
+    ObstacleList* obstacle_list = &GlobalState.ObstacleGlobals.obstacle_list;
+    Obstacle* obstacle_current = &obstacle_list->list[0];
         
     if(GetWorldToScreen2D(obstacle_current->position, GlobalState.PlayerGlobals.camera).x < -OBSTACLE_WIDTH) {
-        int obstacle_move_direction = 0;
-        int obstacle_shrink = 1;
-
-        do {
-            obstacle_move_direction = GetRandomValue(-1, 1);
-        } while(obstacle_move_direction == 0);
-
-        if(GetRandomValue(0, 10) == 0) {
-            obstacle_shrink = -1; // The value -1 will reverse the shrink (make the distance bigger)
+        for(int i = 0; i < OBSTACLE_CAPACITY - 1; i++) {
+            obstacle_list->list[i] = obstacle_list->list[i + 1];
         }
 
-        Vector2 position = Vector2Zero();
-        float distance = 0.0f;
+        obstacle_current = &obstacle_list->list[OBSTACLE_CAPACITY - 1];
 
-        position.x = obstacle_last->position.x + OBSTACLE_WIDTH;
-        position.y = obstacle_last->position.y + obstacle_move_direction * (OBSTACLE_DIST_REDUCTION * 2);
-        distance = obstacle_last->distance;
+        Vector2 obstacle_position = { 0 };
+        float obstacle_distance = 0.0f;
 
-        if(distance >= 0.0f && distance <= OBSTACLE_DIST_INITIAL) {
-            distance -= OBSTACLE_DIST_REDUCTION * obstacle_shrink;
-        }
+        obstacleInitData(&obstacle_list->list[OBSTACLE_CAPACITY - 2], &obstacle_position, &obstacle_distance);
 
-        *obstacle_current = obstacleInit(position, distance);
-        
-        GlobalState.ObstacleGlobals.obstacle_list.index_of_last_obstacle++;
-        if(GlobalState.ObstacleGlobals.obstacle_list.index_of_last_obstacle >= OBSTACLE_CAPACITY) {
-            GlobalState.ObstacleGlobals.obstacle_list.index_of_last_obstacle = 0;
-        }
-
-        GlobalState.ObstacleGlobals.obstacle_list.index_of_first_obstacle++;
-        if(GlobalState.ObstacleGlobals.obstacle_list.index_of_first_obstacle >= OBSTACLE_CAPACITY) {
-            GlobalState.ObstacleGlobals.obstacle_list.index_of_first_obstacle = 0;
-        }
+        *obstacle_current = obstacleInit(
+            obstacle_position, 
+            obstacle_distance, 
+            true
+        );
     }
 }
 
@@ -720,5 +792,4 @@ void debugRenderCollisions() {
     Player* player = &GlobalState.PlayerGlobals.player;
     Rectangle player_rect = { player->position.x - (player->physical_size.x / 2.0f), player->position.y - (player->physical_size.y / 2.0f), player->physical_size.x, player->physical_size.y };
     DrawRectangleLinesEx(player_rect, 1.0f, GREEN);
-
 }
