@@ -27,6 +27,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <math.h>
 
 #include "raylib.h"
 #include "raymath.h"
@@ -38,14 +39,23 @@
 #define PLAYER_GRAVITY_Y 24.0
 #define PLAYER_SPEED 512.0f
 
-#define OBSTACLE_CAPACITY 8
+#define COLLECTLIBLE_RADIUS 16.0f
+#define COLLECTIBLE_SPAWN_CHANCE 4 // What's the chance in between 0 - COLLECTIBLE_SPAWN_CHANCE for this to happen
+#define COLLECTIBLE_SPAWN_CHANCE_VALUE 0 // What's the exact value that must be picked by the 0 - COLLECTIBLE_SPAWN_CHANCE random number generation
+
+#define OBSTACLE_CAPACITY 8 // The size of the Obstacle buffer (where all the obstacle objects are stored)
 #define OBSTACLE_WIDTH 320
 #define OBSTACLE_HEIGHT 512
-#define OBSTACLE_DIST_INITIAL GetScreenHeight() - 64.0f
+#define OBSTACLE_DIST_INITIAL renderGetSize().y - 64.0f
 #define OBSTACLE_DIST_REDUCTION 8
+#define OBSTACLE_SHRINK_REVERSE_CHANCE 5 // What's the chance in between 0 - OBSTACLE_SHRINK_REVERSE_CHANCE for this to happen
+#define OBSTACLE_SHRINK_REVERSE_CHANCE_VALUE 0 // What's the exact value that must be picked by the 0 - OBSTACLE_SHRINK_REVERSE_CHANCE_VALUE random number generation
+
+#define MATH_MIN(a, b) { a < b ? a : b }
 
 // Forward declarations
 struct Player;
+struct Collectible;
 struct Obstacle;
 struct ObstacleList;
 
@@ -81,6 +91,11 @@ void playerSetVelocity(Vector2 velocity);
 
 void playerCheckCollisions();
 
+typedef struct {
+    Vector2 position;
+} Collectible;
+
+
 typedef struct Obstacle {
     // The general idea is as follows:
     // There're two points, 'point0' & 'point1', which are separated by the 'distance'.
@@ -92,10 +107,15 @@ typedef struct Obstacle {
     Vector2 point1;
 
     float distance;
+
+    bool has_collectible;
+    Collectible collectible;
 } Obstacle;
 
 Obstacle obstacleInit(Vector2 position, float distance);
 void obstacleRender(Obstacle* obstacle);
+
+void collectibleRender(Obstacle* obstacle);
 
 typedef struct ObstacleList {
     Obstacle list[OBSTACLE_CAPACITY];
@@ -113,7 +133,8 @@ void obstacleListLoopObstacles();
 struct {
     struct {
         GameplayStateMachine gameplay_state_machine;
-    } StateMachineGlobals;
+        RenderTexture2D render_texture;
+    } Game;
 
     struct {
         Player player;
@@ -132,6 +153,8 @@ struct {
 
 const char* stateMachineGetName();
 void stateMachineSet(GameplayStateMachine state_machine);
+
+Vector2 renderGetSize();
 
 void debugRender();
 void debugRenderData();
@@ -157,18 +180,21 @@ int main(int argc, char** argv) {
 
     SetExitKey(KEY_NULL);
 
-    GlobalState.StateMachineGlobals.gameplay_state_machine = STATE_START;
+    GlobalState.Game.render_texture = LoadRenderTexture(WIDTH, HEIGHT);
+    SetTextureFilter(GlobalState.Game.render_texture.texture, TEXTURE_FILTER_BILINEAR);
+
+    GlobalState.Game.gameplay_state_machine = STATE_START;
 
     GlobalState.PlayerGlobals.player = playerInit(
         (Vector2) { 
-            GetScreenWidth() / 2.0f - 256.0f, 
-            GetScreenHeight() / 2.0f 
+            renderGetSize().x / 2.0f - 256.0f, 
+            renderGetSize().y / 2.0f 
         }
     );
 
     GlobalState.PlayerGlobals.camera = (Camera2D) {
-        .offset = { GetScreenWidth() / 2.0f, GetScreenHeight() / 2.0f },
-        .target = { GetScreenWidth() / 2.0f, GetScreenHeight() / 2.0f },
+        .offset = { renderGetSize().x / 2.0f, renderGetSize().y / 2.0f },
+        .target = { renderGetSize().x / 2.0f, renderGetSize().y / 2.0f},
         .zoom = 1.0f
     };
 
@@ -185,9 +211,12 @@ int main(int argc, char** argv) {
             GlobalState.Debug.render_data = !GlobalState.Debug.render_data;
             GlobalState.Debug.render_colliders = !GlobalState.Debug.render_colliders;
         }
+        float scale = MATH_MIN(GetScreenWidth() / renderGetSize().x, GetScreenHeight() / renderGetSize().y);
+        SetMouseOffset((GetScreenWidth() - (renderGetSize().x * scale)) * 0.5f * -1.0, (GetScreenHeight() - (renderGetSize().y * scale)) * 0.5f * -1.0);
+        SetMouseScale(1 / scale, 1 / scale);
 
         // State-Dependent update loop...
-        switch (GlobalState.StateMachineGlobals.gameplay_state_machine) {
+        switch (GlobalState.Game.gameplay_state_machine) {
             case STATE_START: {
 
                 if(IsKeyPressed(KEY_SPACE) || IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
@@ -223,15 +252,16 @@ int main(int argc, char** argv) {
             } break;
 
             case STATE_RESUME: {
-                    stateMachineSet(STATE_GAMEPLAY);
+                stateMachineSet(STATE_GAMEPLAY);
             } break;
         }
 
-        BeginDrawing();
+        BeginTextureMode(GlobalState.Game.render_texture);
         ClearBackground(RAYWHITE);
 
         // Render your graphics here...
 
+        // State-Independent rendering...
         BeginMode2D(GlobalState.PlayerGlobals.camera);
 
             playerRender();
@@ -239,12 +269,89 @@ int main(int argc, char** argv) {
             debugRenderCollisions();
         
         EndMode2D();
+
         debugRenderData();
+
+        // State-dependent rendering...
+        switch (GlobalState.Game.gameplay_state_machine) {
+            case STATE_START: {
+                const char* text0 = "Summer Jam 2024";
+                const char* text1 = "Press SPACE or LBM to start";
+
+                Vector2 text0_size = MeasureTextEx(GetFontDefault(), text0, TEXT_FONT_SIZE * 4, 2.0f);
+                Vector2 text1_size = MeasureTextEx(GetFontDefault(), text1, TEXT_FONT_SIZE, 2.0f);
+
+                DrawTextPro(
+                    GetFontDefault(), 
+                    text0, 
+                    (Vector2) { renderGetSize().x / 2.0f, renderGetSize().y / 2.0f - 192}, 
+                    Vector2Divide(text0_size, (Vector2) { 2.0f, 2.0f } ), 
+                    0.0f, 
+                    TEXT_FONT_SIZE * 4, 
+                    2.0f, 
+                    BLACK
+                );
+
+                DrawTextPro(
+                    GetFontDefault(), 
+                    text1, 
+                    (Vector2) { renderGetSize().x / 2.0f, renderGetSize().y / 2.0f + 128}, 
+                    Vector2Divide(text1_size, (Vector2) { 2.0f, 2.0f } ), 
+                    0.0f, 
+                    TEXT_FONT_SIZE, 
+                    2.0f, 
+                    Fade(BLACK, 0.5f)
+                );
+            } break;
+
+            case STATE_GAMEPLAY: {
+
+            } break;
+
+            case STATE_GAMEOVER: {
+
+            } break;
+
+            case STATE_PAUSE: {
+
+            } break;
+
+            case STATE_RESUME: {
+                
+            } break;
+        }
+        
+        EndTextureMode();
+
+        BeginDrawing();
+
+            ClearBackground(BLACK);
+
+            DrawTexturePro(
+                GlobalState.Game.render_texture.texture, 
+                (Rectangle){
+                    0.0f,
+                    0.0f,
+                    GlobalState.Game.render_texture.texture.width,
+                    GlobalState.Game.render_texture.texture.height * -1.0f,
+                }, 
+                (Rectangle) { 
+                    (GetScreenWidth() - (GlobalState.Game.render_texture.texture.width * scale)) * 0.5f, 
+                    (GetScreenHeight() - (GlobalState.Game.render_texture.texture.height * scale)) * 0.5f,
+                    GlobalState.Game.render_texture.texture.width * scale,
+                    GlobalState.Game.render_texture.texture.height * scale,
+                }, 
+                Vector2Zero(), 
+                0.0f, 
+                WHITE
+            );
 
         EndDrawing();
     }
 
     // Unloading resources...
+    UnloadRenderTexture(GlobalState.Game.render_texture);
+
     CloseAudioDevice();
     CloseWindow();
 
@@ -269,7 +376,10 @@ Player playerInit(Vector2 position) {
 
 void playerUpdate() {
     // Firstly, we apply our physics forces ..
-    GlobalState.PlayerGlobals.player.velocity = Vector2Add(GlobalState.PlayerGlobals.player.velocity, (Vector2) { PLAYER_GRAVITY_X * GetFrameTime(), PLAYER_GRAVITY_Y * GetFrameTime() });
+    GlobalState.PlayerGlobals.player.velocity = Vector2Add(
+        GlobalState.PlayerGlobals.player.velocity, 
+        (Vector2) { PLAYER_GRAVITY_X * GetFrameTime(), PLAYER_GRAVITY_Y * GetFrameTime() }
+    );
 
     // ... (Don't forget to clamp it between the reasonabe bounds!) ...
     GlobalState.PlayerGlobals.player.velocity = Vector2Clamp(
@@ -339,12 +449,24 @@ void playerCheckCollisions() {
         if(CheckCollisionRecs(player_rect, point0_rect) || CheckCollisionRecs(player_rect, point1_rect)) {
             player->game_over = true;
         }
+
+        if(obstacle->has_collectible) {
+            if(CheckCollisionCircleRec(obstacle->collectible.position, COLLECTLIBLE_RADIUS, player_rect)) {
+                player->points++;
+                obstacle->has_collectible = false;
+            }
+        }
     }
 }
 
 Obstacle obstacleInit(Vector2 position, float distance){
     Obstacle result = {
-        .position = position,
+        .position = Vector2Clamp(
+            position, 
+            (Vector2) { position.x, distance / 2.0f },
+            (Vector2) { position.x, renderGetSize().y - distance / 2.0f }
+        ),
+
         .distance = distance,
 
         .point0.x = position.x,
@@ -353,6 +475,27 @@ Obstacle obstacleInit(Vector2 position, float distance){
 
     result.point0.y = position.y - (distance / 2.0f);
     result.point1.y = position.y + (distance / 2.0f);
+    
+    // Simple check if there is a space for collectible to be spawned
+    if(distance > COLLECTLIBLE_RADIUS * 2.0f) {
+        // RNG that picks if the collectible will be spawned
+        if(GetRandomValue(0, COLLECTIBLE_SPAWN_CHANCE) == COLLECTIBLE_SPAWN_CHANCE_VALUE) {
+            result.has_collectible = true;
+            result.collectible = (Collectible) { 
+                (Vector2) { 
+                    position.x - GetRandomValue(
+                        (OBSTACLE_WIDTH / -2.0f) + (COLLECTLIBLE_RADIUS * 2.0f), 
+                        (OBSTACLE_WIDTH / 2.0f) - (COLLECTLIBLE_RADIUS * 2.0f)
+                    ),
+                    // This formula either substracts or add a value, which is in between the point0 and point1 from the position.y value. It accounts the radius of the collectible
+                    position.y - GetRandomValue(
+                        (distance / -2.0f) + (COLLECTLIBLE_RADIUS * 2.0f), 
+                        (distance / 2.0f) - (COLLECTLIBLE_RADIUS * 2.0f)
+                    )
+                }
+            };
+        } 
+    }
 
     return result;
 }
@@ -388,20 +531,47 @@ void obstacleRender(Obstacle* obstacle) {
         DARKGRAY
     );
 
+    collectibleRender(obstacle);
+
+}
+
+void collectibleRender(Obstacle* obstacle) {
+    if(!obstacle || !obstacle->has_collectible) {
+        return;
+    }
+
+    DrawCircleV(
+        obstacle->collectible.position, 
+        COLLECTLIBLE_RADIUS, 
+        GOLD
+    );
+
+    DrawCircleLinesV(
+        obstacle->collectible.position, 
+        COLLECTLIBLE_RADIUS, 
+        BLACK
+    );
 }
 
 ObstacleList obstacleListInit() {
     ObstacleList result = { 0 };
 
-    Vector2 obs_position = { 0.0f, GetScreenHeight() / 2.0f };
+    Vector2 obs_position = { 0.0f, renderGetSize().y / 2.0f };
     float distance = OBSTACLE_DIST_INITIAL;
 
     for(int obstacle_index = 0; obstacle_index < OBSTACLE_CAPACITY; obstacle_index++) {
         int obstacle_move_direction = 0;
+        int obstacle_shrink = 1;
 
+        // RNG that picks the horizontal direction that the next obstacle will be placed (1 -> up; -1 -> down)
         do {
             obstacle_move_direction = GetRandomValue(-1, 1);
         } while(obstacle_move_direction == 0);
+
+        // RNG that picks if the next obstacle will be shrinked or extended
+        if(GetRandomValue(0, OBSTACLE_SHRINK_REVERSE_CHANCE) == OBSTACLE_SHRINK_REVERSE_CHANCE_VALUE) {
+            obstacle_shrink = -1; // The value -1 will extend the obstacle (make the distance bigger)
+        }
 
         result.list[obstacle_index] = obstacleInit(obs_position, distance);
 
@@ -409,10 +579,10 @@ ObstacleList obstacleListInit() {
         obs_position.y = result.list[obstacle_index].position.y + obstacle_move_direction * (OBSTACLE_DIST_REDUCTION * 2);
 
         if(distance >= 0.0f) {
-            distance -= OBSTACLE_DIST_REDUCTION;
+            distance -= OBSTACLE_DIST_REDUCTION * obstacle_shrink;
         }
 
-        obs_position.y = Clamp(obs_position.y, distance / 2.0f, GetScreenHeight() - distance / 2.0f);
+        obs_position.y = Clamp(obs_position.y, distance / 2.0f, renderGetSize().y - distance / 2.0f);
     }
 
     result.count = OBSTACLE_CAPACITY;
@@ -438,10 +608,15 @@ void obstacleListLoopObstacles() {
         
     if(GetWorldToScreen2D(obstacle_current->position, GlobalState.PlayerGlobals.camera).x < -OBSTACLE_WIDTH) {
         int obstacle_move_direction = 0;
+        int obstacle_shrink = 1;
 
         do {
             obstacle_move_direction = GetRandomValue(-1, 1);
         } while(obstacle_move_direction == 0);
+
+        if(GetRandomValue(0, 10) == 0) {
+            obstacle_shrink = -1; // The value -1 will reverse the shrink (make the distance bigger)
+        }
 
         Vector2 position = Vector2Zero();
         float distance = 0.0f;
@@ -450,8 +625,8 @@ void obstacleListLoopObstacles() {
         position.y = obstacle_last->position.y + obstacle_move_direction * (OBSTACLE_DIST_REDUCTION * 2);
         distance = obstacle_last->distance;
 
-        if(distance >= 0.0f) {
-            distance -= OBSTACLE_DIST_REDUCTION;
+        if(distance >= 0.0f && distance <= OBSTACLE_DIST_INITIAL) {
+            distance -= OBSTACLE_DIST_REDUCTION * obstacle_shrink;
         }
 
         *obstacle_current = obstacleInit(position, distance);
@@ -469,7 +644,7 @@ void obstacleListLoopObstacles() {
 }
 
 const char* stateMachineGetName() {
-    switch (GlobalState.StateMachineGlobals.gameplay_state_machine) {
+    switch (GlobalState.Game.gameplay_state_machine) {
         case STATE_START: return "STATE_START";
         case STATE_GAMEPLAY: return "STATE_GAMEPLAY";
         case STATE_GAMEOVER: return "STATE_GAMEOVER";
@@ -479,7 +654,14 @@ const char* stateMachineGetName() {
 }
 
 void stateMachineSet(GameplayStateMachine state_machine) {
-    GlobalState.StateMachineGlobals.gameplay_state_machine = state_machine;
+    GlobalState.Game.gameplay_state_machine = state_machine;
+}
+
+Vector2 renderGetSize() {
+    return (Vector2) {
+        GlobalState.Game.render_texture.texture.width,
+        GlobalState.Game.render_texture.texture.height
+    };
 }
 
 void debugRender() {
@@ -495,7 +677,7 @@ void debugRenderData() {
     SetTextLineSpacing(TEXT_FONT_SIZE);
     DrawText(
         TextFormat(
-            "Game:\n> FPS: %i\n> State: %s\n\nPlayer:\n> Position: %.2f, %.2f\n> Velocity: %.2f, %.2f\n> Alive: %s\n> Points: %i\n",
+            "Game:\n> FPS: %i\n> State: %s\n\nPlayer:\n> Position: x.%.1f, y.%.1f\n> Velocity: x.%.1f, y.%.1f\n> Alive: %s\n> Points: %i\n",
             GetFPS(),
             stateMachineGetName(),
             GlobalState.PlayerGlobals.player.position.x,
@@ -525,6 +707,14 @@ void debugRenderCollisions() {
 
         DrawRectangleLinesEx(point0_rect, 1.0f, GREEN);
         DrawRectangleLinesEx(point1_rect, 1.0f, GREEN);
+
+        if(obstacle->has_collectible) {
+            DrawCircleLinesV(
+                obstacle->collectible.position, 
+                COLLECTLIBLE_RADIUS, 
+                GREEN
+            );
+        }
     }
 
     Player* player = &GlobalState.PlayerGlobals.player;
