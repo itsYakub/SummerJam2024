@@ -33,31 +33,34 @@
 #include "raymath.h"
 
 // macro deffinitions
+#define GAME_BACKGROUND_COLOR 0x4d9be6ff
+#define GAME_LINES_COLOR 0x2e222fff
+
 #define TEXT_FONT_SIZE 32
+#define TEXT_FONT_SPACING 4
+#define TEXT_COLOR_DARK 0x2e222fff
+#define TEXT_COLOR_LIGHT 0xffffffff 
 
 #define PLAYER_GRAVITY_X 0.0
 #define PLAYER_GRAVITY_Y 24.0
 #define PLAYER_SPEED 512.0f
 
 #define COLLECTLIBLE_RADIUS 16.0f
-#define COLLECTIBLE_SPAWN_CHANCE 4 // What's the chance in between 0 - COLLECTIBLE_SPAWN_CHANCE for this to happen
+#define COLLECTIBLE_SPAWN_CHANCE 2 // What's the chance in between 0 - COLLECTIBLE_SPAWN_CHANCE for this to happen
 #define COLLECTIBLE_SPAWN_CHANCE_VALUE 0 // What's the exact value that must be picked by the 0 - COLLECTIBLE_SPAWN_CHANCE random number generation
 
 #define OBSTACLE_CAPACITY 8 // The size of the Obstacle buffer (where all the obstacle objects are stored)
-#define OBSTACLE_WIDTH 320
-#define OBSTACLE_HEIGHT 512
-#define OBSTACLE_DIST_INITIAL renderGetSize().y - 64.0f
-#define OBSTACLE_DIST_REDUCTION 8
+#define OBSTACLE_WIDTH 512
+#define OBSTACLE_DIST_INITIAL renderGetSize().y - 128.0f
+#define OBSTACLE_DIST_REDUCTION 16
 #define OBSTACLE_SHRINK_REVERSE_CHANCE 5 // What's the chance in between 0 - OBSTACLE_SHRINK_REVERSE_CHANCE for this to happen
 #define OBSTACLE_SHRINK_REVERSE_CHANCE_VALUE 0 // What's the exact value that must be picked by the 0 - OBSTACLE_SHRINK_REVERSE_CHANCE_VALUE random number generation
+#define OBSTACLE_UPPER_COLOR 0x7f708aff
+#define OBSTACLE_LOWER_COLOR 0xf9c22bff
 
 #define MATH_MIN(a, b) { a < b ? a : b }
 
-// Forward declarations
-struct Player;
-struct Collectible;
-struct Obstacle;
-struct ObstacleList;
+#define internal static
 
 typedef enum {
     STATE_START,
@@ -74,7 +77,6 @@ typedef struct Player {
     Vector2 velocity;
     Vector2 physical_size;
     
-    Vector2 sprite_size;
     float sprite_rotation;
 
     uint32_t points;
@@ -84,6 +86,7 @@ typedef struct Player {
 Player playerInit(Vector2 position);
 void playerUpdate();
 void playerRender();
+void playerUnload();
 
 void playerSetPosition(Vector2 position);
 void playerIncrementPosition(Vector2 incrementation);
@@ -100,9 +103,12 @@ typedef enum {
 
 typedef struct {
     CollectibleRarity collectible_rarity;
+
+    Texture2D* spirte;
+    float sprite_rotation;
+
     Vector2 position;
 } Collectible;
-
 
 typedef struct Obstacle {
     // The general idea is as follows:
@@ -121,7 +127,6 @@ typedef struct Obstacle {
 } Obstacle;
 
 Obstacle obstacleInit(Vector2 position, float distance, bool spawn_collectible);
-void obstacleRender(Obstacle* obstacle);
 
 Collectible collectibleInit(Obstacle* obstacle);
 void collectibleRender(Obstacle* obstacle);
@@ -140,6 +145,10 @@ struct {
     struct {
         GameplayStateMachine gameplay_state_machine;
         RenderTexture2D render_texture;
+
+        float gameplay_time;
+
+        bool quit;
     } Game;
 
     struct {
@@ -155,6 +164,11 @@ struct {
         bool render_data;
         bool render_colliders;
     } Debug;
+
+    struct {
+        Texture2D player_sprite;
+        Texture2D collectible_textures[3];
+    } Resources;
 } GlobalState;
 
 const char* stateMachineGetName();
@@ -165,6 +179,13 @@ Vector2 renderGetSize();
 void debugRender();
 void debugRenderData();
 void debugRenderCollisions();
+
+void gameInit();
+
+void resourcesLoad();
+void resourcesUnload();
+
+internal bool collisionCheckRectLine(Rectangle rect, Vector2 line_start, Vector2 line_end);
 
 int main(int argc, char** argv) {
     const char* TITLE = "Summer Jam 2024";
@@ -189,27 +210,10 @@ int main(int argc, char** argv) {
     GlobalState.Game.render_texture = LoadRenderTexture(WIDTH, HEIGHT);
     SetTextureFilter(GlobalState.Game.render_texture.texture, TEXTURE_FILTER_BILINEAR);
 
-    GlobalState.Game.gameplay_state_machine = STATE_START;
+    gameInit();
+    resourcesLoad();
 
-    GlobalState.PlayerGlobals.player = playerInit(
-        (Vector2) { 
-            renderGetSize().x / 2.0f - 256.0f, 
-            renderGetSize().y / 2.0f 
-        }
-    );
-
-    GlobalState.PlayerGlobals.camera = (Camera2D) {
-        .offset = { renderGetSize().x / 2.0f, renderGetSize().y / 2.0f },
-        .target = { renderGetSize().x / 2.0f, renderGetSize().y / 2.0f},
-        .zoom = 1.0f
-    };
-
-    GlobalState.ObstacleGlobals.obstacle_list = obstacleListInit();
-
-    GlobalState.Debug.render_data = false;
-    GlobalState.Debug.render_colliders = false;
-
-    while(!WindowShouldClose()) {
+    while(!WindowShouldClose() && !GlobalState.Game.quit) {
         // Update your game logic here...
 
         // State-Independent update loop...
@@ -237,6 +241,7 @@ int main(int argc, char** argv) {
                 playerCheckCollisions();
                 obstacleListUpdate();
                 GlobalState.PlayerGlobals.camera.target.x += PLAYER_SPEED * GetFrameTime();
+                GlobalState.Game.gameplay_time += GetFrameTime();
 
                 if(IsKeyPressed(KEY_ESCAPE)) {
                     stateMachineSet(STATE_PAUSE);
@@ -248,7 +253,13 @@ int main(int argc, char** argv) {
             } break;
 
             case STATE_GAMEOVER: {
+                if(IsKeyPressed(KEY_ESCAPE)) {
+                    GlobalState.Game.quit = true;
+                }
 
+                if(IsKeyPressed(KEY_ENTER)) {
+                    gameInit();
+                }
             } break;
 
             case STATE_PAUSE: {
@@ -263,7 +274,7 @@ int main(int argc, char** argv) {
         }
 
         BeginTextureMode(GlobalState.Game.render_texture);
-        ClearBackground(RAYWHITE);
+        ClearBackground(GetColor(GAME_BACKGROUND_COLOR));
 
         // Render your graphics here...
 
@@ -284,8 +295,8 @@ int main(int argc, char** argv) {
                 const char* text0 = "Summer Jam 2024";
                 const char* text1 = "Press SPACE or LBM to start";
 
-                Vector2 text0_size = MeasureTextEx(GetFontDefault(), text0, TEXT_FONT_SIZE * 4, 2.0f);
-                Vector2 text1_size = MeasureTextEx(GetFontDefault(), text1, TEXT_FONT_SIZE, 2.0f);
+                Vector2 text0_size = MeasureTextEx(GetFontDefault(), text0, TEXT_FONT_SIZE * 4, TEXT_FONT_SPACING);
+                Vector2 text1_size = MeasureTextEx(GetFontDefault(), text1, TEXT_FONT_SIZE, TEXT_FONT_SPACING);
 
                 DrawTextPro(
                     GetFontDefault(), 
@@ -294,8 +305,8 @@ int main(int argc, char** argv) {
                     Vector2Divide(text0_size, (Vector2) { 2.0f, 2.0f } ), 
                     0.0f, 
                     TEXT_FONT_SIZE * 4, 
-                    2.0f, 
-                    BLACK
+                    TEXT_FONT_SPACING, 
+                    GetColor(TEXT_COLOR_DARK)
                 );
 
                 DrawTextPro(
@@ -305,9 +316,10 @@ int main(int argc, char** argv) {
                     Vector2Divide(text1_size, (Vector2) { 2.0f, 2.0f } ), 
                     0.0f, 
                     TEXT_FONT_SIZE, 
-                    2.0f, 
-                    Fade(BLACK, 0.5f)
+                    TEXT_FONT_SPACING, 
+                    Fade(GetColor(TEXT_COLOR_DARK), 0.5f)
                 );
+
             } break;
 
             case STATE_GAMEPLAY: {
@@ -315,10 +327,95 @@ int main(int argc, char** argv) {
             } break;
 
             case STATE_GAMEOVER: {
+                DrawRectangle(
+                    0,
+                    0,
+                    renderGetSize().x,
+                    renderGetSize().y,
+                    Fade(BLACK, 0.5f)
+                );
+
+                const char* text0 = "Game Over!";
+                const char* text1 = TextFormat("> Total Time: %.02fs\n> Total Score: %i", GlobalState.Game.gameplay_time, GlobalState.PlayerGlobals.player.points);
+                const char* text2 = "Press ENTER to RESTART or ESCAPE to QUIT...";
+
+                Vector2 text0_size = MeasureTextEx(GetFontDefault(), text0, TEXT_FONT_SIZE * 5, TEXT_FONT_SPACING);
+                Vector2 text1_size = MeasureTextEx(GetFontDefault(), text1, TEXT_FONT_SIZE, TEXT_FONT_SPACING);
+                Vector2 text2_size = MeasureTextEx(GetFontDefault(), text2, TEXT_FONT_SIZE, TEXT_FONT_SPACING);
+
+                SetTextLineSpacing(TEXT_FONT_SIZE);
+
+                DrawTextPro(
+                    GetFontDefault(), 
+                    text0, 
+                    (Vector2) { renderGetSize().x / 2.0f, renderGetSize().y / 2.0f}, 
+                    Vector2Divide(text0_size, (Vector2) { 2.0f, 2.0f } ), 
+                    0.0f, 
+                    TEXT_FONT_SIZE * 5, 
+                    TEXT_FONT_SPACING, 
+                    GetColor(TEXT_COLOR_LIGHT)
+                );
+
+                DrawTextPro(
+                    GetFontDefault(), 
+                    text1, 
+                    (Vector2) { renderGetSize().x / 2.0f, renderGetSize().y / 2.0f + text1_size.y}, 
+                    Vector2Divide(text1_size, (Vector2) { 2.0f, 2.0f } ), 
+                    0.0f, 
+                    TEXT_FONT_SIZE, 
+                    TEXT_FONT_SPACING, 
+                    Fade(GetColor(TEXT_COLOR_LIGHT), 0.8f)
+                );
+
+                DrawTextPro(
+                    GetFontDefault(), 
+                    text2, 
+                    (Vector2) { renderGetSize().x / 2.0f, renderGetSize().y / 2.0f + 256.0f}, 
+                    Vector2Divide(text2_size, (Vector2) { 2.0f, 2.0f } ), 
+                    0.0f, 
+                    TEXT_FONT_SIZE, 
+                    TEXT_FONT_SPACING, 
+                    Fade(GetColor(TEXT_COLOR_LIGHT), 0.8f)
+                );
 
             } break;
 
             case STATE_PAUSE: {
+                DrawRectangle(
+                    0,
+                    0,
+                    renderGetSize().x,
+                    renderGetSize().y,
+                    Fade(BLACK, 0.5f)
+                );
+
+                const char* text0 = "Paused!";
+                const char* text1 = "Press ESCAPE to resume...";
+
+                Vector2 text0_size = MeasureTextEx(GetFontDefault(), text0, TEXT_FONT_SIZE * 5, 2.0f);
+                Vector2 text1_size = MeasureTextEx(GetFontDefault(), text1, TEXT_FONT_SIZE, 2.0f);
+
+                DrawTextPro(
+                    GetFontDefault(), 
+                    text0, 
+                    (Vector2) { renderGetSize().x / 2.0f, renderGetSize().y / 2.0f}, 
+                    Vector2Divide(text0_size, (Vector2) { 2.0f, 2.0f } ), 
+                    0.0f, 
+                    TEXT_FONT_SIZE * 5, 
+                    TEXT_FONT_SPACING, 
+                    GetColor(TEXT_COLOR_LIGHT)
+                );
+
+                DrawTextPro(
+                    GetFontDefault(), 
+                    text1, 
+                    (Vector2) { renderGetSize().x / 2.0f, renderGetSize().y / 2.0f + 128}, 
+                    Vector2Divide(text1_size, (Vector2) { 2.0f, 2.0f } ), 
+                    0.0f, 
+                    TEXT_FONT_SIZE, 
+                    TEXT_FONT_SPACING, 
+                    Fade(GetColor(TEXT_COLOR_LIGHT), 0.8f)
+                );    
 
             } break;
 
@@ -356,6 +453,7 @@ int main(int argc, char** argv) {
     }
 
     // Unloading resources...
+    resourcesUnload();
     UnloadRenderTexture(GlobalState.Game.render_texture);
 
     CloseAudioDevice();
@@ -370,7 +468,6 @@ Player playerInit(Vector2 position) {
         .velocity = Vector2Zero(),
         .physical_size = { 48.0f, 48.0f },
 
-        .sprite_size = { 64.0f, 64.0f },
         .sprite_rotation = 0.0f,
 
         .points = 0,
@@ -414,16 +511,23 @@ void playerRender() {
         20.0f * GetFrameTime()
     );
 
-    DrawRectanglePro(
-        (Rectangle) { 
-            round(player->position.x),
-            round(player->position.y),
-            player->sprite_size.x,
-            player->sprite_size.y
+    DrawTexturePro(
+        GlobalState.Resources.player_sprite, 
+        (Rectangle) {
+            0.0f,
+            0.0f,
+            GlobalState.Resources.player_sprite.width,
+            GlobalState.Resources.player_sprite.height
         }, 
-        Vector2Divide(player->sprite_size, (Vector2) { 2.0f, 2.0f }), 
+        (Rectangle) {
+            player->position.x,
+            player->position.y,
+            GlobalState.Resources.player_sprite.width,
+            GlobalState.Resources.player_sprite.height
+        }, 
+        Vector2Divide((Vector2) { GlobalState.Resources.player_sprite.width, GlobalState.Resources.player_sprite.height }, (Vector2) { 2.0f, 2.0f }), 
         player->sprite_rotation, 
-        RED
+        WHITE
     );
 }
 
@@ -444,14 +548,18 @@ void playerSetVelocity(Vector2 velocity) {
 void playerCheckCollisions() {
     Player* player = &GlobalState.PlayerGlobals.player;
 
-    for(int obstacles_to_check = 0; obstacles_to_check < OBSTACLE_CAPACITY; obstacles_to_check++) {
+    for(int obstacles_to_check = 0; obstacles_to_check < OBSTACLE_CAPACITY - 1; obstacles_to_check++) {
         Obstacle* obstacle = &GlobalState.ObstacleGlobals.obstacle_list.list[obstacles_to_check];
+        Obstacle* obstacle_next = &GlobalState.ObstacleGlobals.obstacle_list.list[obstacles_to_check + 1];
 
-        Rectangle player_rect = { player->position.x - (player->physical_size.x / 2.0f), player->position.y - (player->physical_size.y / 2.0f), player->physical_size.x, player->physical_size.y };
-        Rectangle point0_rect = { obstacle->point0.x - OBSTACLE_WIDTH / 2.0f, obstacle->point0.y - OBSTACLE_HEIGHT, OBSTACLE_WIDTH, OBSTACLE_HEIGHT };
-        Rectangle point1_rect = { obstacle->point1.x - OBSTACLE_WIDTH / 2.0f, obstacle->point1.y, OBSTACLE_WIDTH, OBSTACLE_HEIGHT };
+        Rectangle player_rect = { 
+            player->position.x - (player->physical_size.x / 2.0f), 
+            player->position.y - (player->physical_size.y / 2.0f), 
+            player->physical_size.x, 
+            player->physical_size.y 
+        };
 
-        if(CheckCollisionRecs(player_rect, point0_rect) || CheckCollisionRecs(player_rect, point1_rect)) {
+        if(collisionCheckRectLine(player_rect, obstacle->point0, obstacle_next->point0) || collisionCheckRectLine(player_rect, obstacle->point1, obstacle_next->point1)) {
             player->game_over = true;
         }
 
@@ -473,12 +581,7 @@ void playerCheckCollisions() {
 
 Obstacle obstacleInit(Vector2 position, float distance, bool spawn_collectible){
     Obstacle result = {
-        .position = Vector2Clamp(
-            position, 
-            (Vector2) { position.x, distance / 2.0f },
-            (Vector2) { position.x, renderGetSize().y - distance / 2.0f }
-        ),
-
+        .position = position,
         .distance = distance,
 
         .point0.x = position.x,
@@ -500,41 +603,6 @@ Obstacle obstacleInit(Vector2 position, float distance, bool spawn_collectible){
     return result;
 }
 
-void obstacleRender(Obstacle* obstacle) {
-    DrawRectanglePro(
-        (Rectangle) {
-            obstacle->point0.x,
-            obstacle->point0.y,
-            OBSTACLE_WIDTH,
-            OBSTACLE_HEIGHT
-        }, 
-        (Vector2) { 
-            OBSTACLE_WIDTH / 2.0f, 
-            0.0f
-        }, 
-        180.0f, 
-        GRAY
-    );
-    
-    DrawRectanglePro(
-        (Rectangle) {
-            obstacle->point1.x,
-            obstacle->point1.y,
-            OBSTACLE_WIDTH,
-            OBSTACLE_HEIGHT
-        }, 
-        (Vector2) { 
-            OBSTACLE_WIDTH / 2.0f, 
-            0.0f
-        }, 
-        0.0f, 
-        DARKGRAY
-    );
-
-    collectibleRender(obstacle);
-
-}
-
 Collectible collectibleInit(Obstacle* obstacle) {
     Collectible result = (Collectible) { 
         .position = (Vector2) { 
@@ -547,20 +615,23 @@ Collectible collectibleInit(Obstacle* obstacle) {
                 (obstacle->distance / -2.0f) + (COLLECTLIBLE_RADIUS * 2.0f), 
                 (obstacle->distance / 2.0f) - (COLLECTLIBLE_RADIUS * 2.0f)
             )
-        }
+        },
+        .sprite_rotation = GetRandomValue(-30, 30)
     };
 
     // 'collectible_rarity_random_index' picks the random value...
-    int collectible_rarity_random_index = GetRandomValue(0, 10);
+    int collectible_rarity_random_index = GetRandomValue(0, 30);
     // .. which then helps us assign the proper rarity to our collectible.
 
-    if(collectible_rarity_random_index >= 10 && collectible_rarity_random_index < 4) { // If 'collectible_rarity_random_index' is in range 10 - 5, then the rarity is COLLECTIBLE_COMMON (50%)
+    if(collectible_rarity_random_index >= 0 && collectible_rarity_random_index < 11) { // If 'collectible_rarity_random_index' is in range 0 - 10, then the rarity is COLLECTIBLE_COMMON (33%)
         result.collectible_rarity = COLLECTIBLE_COMMON;
-    } else if(collectible_rarity_random_index >= 4 && collectible_rarity_random_index < 0) { // Otherwise, if 'collectible_rarity_random_index' is in range 4 - 1, then the rarity is COLLECTLIBLE_RARE (40%)
+    } else if(collectible_rarity_random_index >= 11 && collectible_rarity_random_index < 21) { // Otherwise, if 'collectible_rarity_random_index' is in range 11 - 20, then the rarity is COLLECTLIBLE_RARE (33%)
         result.collectible_rarity = COLLECTLIBLE_RARE;
-    } else if(collectible_rarity_random_index <= 0) { // lastly, if rarity is exactly 0, then the rarity is COLLECTLIBLE_LEGENDARY (10%)
+    } else if(collectible_rarity_random_index >= 21 && collectible_rarity_random_index < 31) { // lastly, if 'collectible_rarity_random_index' is in range 21 - 30, then the rarity is COLLECTLIBLE_LEGENDARY (33%)
         result.collectible_rarity = COLLECTLIBLE_LEGENDARY;
     }
+
+    result.spirte = &GlobalState.Resources.collectible_textures[result.collectible_rarity];
 
     return result;
 }
@@ -570,56 +641,25 @@ void collectibleRender(Obstacle* obstacle) {
         return;
     }
 
-    switch(obstacle->collectible.collectible_rarity) {
-        case COLLECTIBLE_COMMON: {
-            DrawCircleV(
-                obstacle->collectible.position, 
-                COLLECTLIBLE_RADIUS, 
-                GOLD
-            );
+    DrawTexturePro(
+        *obstacle->collectible.spirte,
+        (Rectangle) {
+            0,
+            0,
+            obstacle->collectible.spirte->width,
+            obstacle->collectible.spirte->height
+        },
+        (Rectangle) {
+            obstacle->collectible.position.x,
+            obstacle->collectible.position.y,
+            COLLECTLIBLE_RADIUS * 2,
+            COLLECTLIBLE_RADIUS * 2
+        },
+        (Vector2) { COLLECTLIBLE_RADIUS, COLLECTLIBLE_RADIUS },
+        obstacle->collectible.sprite_rotation,
+        WHITE
+    );
 
-            DrawCircleLinesV(
-                obstacle->collectible.position, 
-                COLLECTLIBLE_RADIUS, 
-                BLACK
-            );
-
-        } break;
-
-        case COLLECTLIBLE_RARE: {
-            DrawCircleV(
-                obstacle->collectible.position, 
-                COLLECTLIBLE_RADIUS, 
-                RED
-            );
-
-            DrawCircleLinesV(
-                obstacle->collectible.position, 
-                COLLECTLIBLE_RADIUS, 
-                BLACK
-            );
-
-        } break;
-
-        case COLLECTLIBLE_LEGENDARY: {
-            DrawCircleV(
-                obstacle->collectible.position, 
-                COLLECTLIBLE_RADIUS, 
-                BLUE
-            );
-
-            DrawCircleLinesV(
-                obstacle->collectible.position, 
-                COLLECTLIBLE_RADIUS, 
-                BLACK
-            );
-        } break;
-
-        case COLLECTIBLE_RARITY_COUNT: break;
-        default: {
-            
-        } break;
-    }
 }
 
 ObstacleList obstacleListInit() {
@@ -628,9 +668,9 @@ ObstacleList obstacleListInit() {
     Vector2 obstacle_position = { 0.0f, renderGetSize().y / 2.0f };
     float obstacle_distance = OBSTACLE_DIST_INITIAL;
 
-    for(int obstacle_index = 0; obstacle_index < OBSTACLE_CAPACITY; obstacle_index++) {
-        result.list[obstacle_index] = obstacleInit(obstacle_position, obstacle_distance, obstacle_index >= OBSTACLE_CAPACITY / 2);
+    result.list[0] = obstacleInit(obstacle_position, obstacle_distance, false);
 
+    for(int obstacle_index = 1; obstacle_index < OBSTACLE_CAPACITY; obstacle_index++) {
         int obstacle_move_direction = 0;
 
         // RNG that picks the horizontal direction that the next obstacle will be placed (1 -> up; -1 -> down)
@@ -639,13 +679,14 @@ ObstacleList obstacleListInit() {
         } while(obstacle_move_direction == 0);
 
         obstacle_position.x += OBSTACLE_WIDTH;
-        obstacle_position.y = result.list[OBSTACLE_CAPACITY - 2].position.y + obstacle_move_direction * (OBSTACLE_DIST_REDUCTION * 2);
-        obstacle_position.y = Clamp(obstacle_position.y, obstacle_distance / 2.0f, renderGetSize().y - obstacle_distance / 2.0f);
+        obstacle_position.y = result.list[obstacle_index - 1].position.y + obstacle_move_direction * (OBSTACLE_DIST_REDUCTION * 2);
+        obstacle_position.y = Clamp(obstacle_position.y, obstacle_distance / 2.0f + 32.0f, renderGetSize().y - obstacle_distance / 2.0f - 32.0f);
 
-        obstacle_distance = obstacle_distance >= 0.0f && obstacle_distance <= OBSTACLE_DIST_INITIAL ?
+        obstacle_distance = obstacle_distance > 0.0f && obstacle_distance < OBSTACLE_DIST_INITIAL ?
             obstacle_distance - OBSTACLE_DIST_REDUCTION :
             obstacle_distance;
 
+        result.list[obstacle_index] = obstacleInit(obstacle_position, obstacle_distance, obstacle_index >= OBSTACLE_CAPACITY / 2);
     }
 
     return result;
@@ -664,11 +705,11 @@ void obstacleInitData(Obstacle* obstacle, Vector2* position, float* distance) {
         obstacle->position.y + obstacle_move_direction * (OBSTACLE_DIST_REDUCTION * 2)
     };
 
-    position->y = Clamp(position->y, position->y / 2.0f, renderGetSize().y - position->y / 2.0f);
-
     *distance = obstacle->distance >= 0.0f && obstacle->distance <= OBSTACLE_DIST_INITIAL ?
         obstacle->distance - OBSTACLE_DIST_REDUCTION :
         obstacle->distance;
+
+    position->y = Clamp(position->y, *distance / 2.0f + 32.0f, renderGetSize().y - *distance / 2.0f - 32.0f);
 }
 
 void obstacleListUpdate() {
@@ -676,17 +717,76 @@ void obstacleListUpdate() {
 }
 
 void obstacleListRender() {
-    for(int obstacle_index = 0; obstacle_index < OBSTACLE_CAPACITY; obstacle_index++) {
-        Obstacle* obstacle_current;
-        Obstacle* obstacle_next;
+    for(int obstacle_index = 0; obstacle_index < OBSTACLE_CAPACITY - 1; obstacle_index++) {
+        Obstacle* obstacle_current = &GlobalState.ObstacleGlobals.obstacle_list.list[obstacle_index];
+        Obstacle* obstacle_next = &GlobalState.ObstacleGlobals.obstacle_list.list[obstacle_index + 1];
+        
+        Vector2 points0[4] = {
+            obstacle_current->point0,
+            obstacle_next->point0,
+            (Vector2) { obstacle_current->point0.x + OBSTACLE_WIDTH / 2.0f, obstacle_current->point0.y },
+            (Vector2) { obstacle_next->point0.x - OBSTACLE_WIDTH / 2.0f, obstacle_next->point0.y }
+        };
 
-        if(obstacle_index < OBSTACLE_CAPACITY - 1) {
-            obstacle_current = &GlobalState.ObstacleGlobals.obstacle_list.list[obstacle_index];
-            obstacle_next = &GlobalState.ObstacleGlobals.obstacle_list.list[obstacle_index + 1];
-        } 
+        Vector2 points1[4] = {
+            obstacle_current->point1,
+            obstacle_next->point1,
+            (Vector2) { obstacle_current->point1.x + OBSTACLE_WIDTH / 2.0f, obstacle_current->point1.y },
+            (Vector2) { obstacle_next->point1.x - OBSTACLE_WIDTH / 2.0f, obstacle_next->point1.y }
+        };
 
-        DrawLineBezier(obstacle_current->point0, obstacle_next->point0, 2.0f, GRAY);
-        DrawLineBezier(obstacle_current->point1, obstacle_next->point1, 2.0f, GRAY);
+        for(int points0_index = 0; points0_index < OBSTACLE_WIDTH / 2.0f; points0_index++) {
+            Vector2 spline_point = GetSplinePointBezierCubic(
+                points0[0], 
+                points0[2], 
+                points0[3], 
+                points0[1], 
+                points0_index / (OBSTACLE_WIDTH / 2.0f)
+            );
+
+            DrawLineEx(
+                spline_point, 
+                (Vector2) { spline_point.x, 0.0f }, 
+                4.0f, 
+                GetColor(OBSTACLE_UPPER_COLOR)
+            );
+        }
+
+        for(int points1_index = 0; points1_index < OBSTACLE_WIDTH / 2.0f; points1_index++) {
+            Vector2 spline_point = GetSplinePointBezierCubic(
+                points1[0], 
+                points1[2], 
+                points1[3], 
+                points1[1], 
+                points1_index / (OBSTACLE_WIDTH / 2.0f)
+            );
+
+            DrawLineEx(
+                spline_point, 
+                (Vector2) { spline_point.x, renderGetSize().y }, 
+                4.0f, 
+                GetColor(OBSTACLE_LOWER_COLOR)
+            );
+        }
+
+        DrawSplineSegmentBezierCubic(
+            points0[0], 
+            points0[2], 
+            points0[3], 
+            points0[1], 
+            4.0f,
+            GetColor(GAME_LINES_COLOR)    
+        );
+
+        DrawSplineSegmentBezierCubic(
+            points1[0], 
+            points1[2], 
+            points1[3], 
+            points1[1], 
+            4.0f,
+            GetColor(GAME_LINES_COLOR)
+        );
+
         collectibleRender(obstacle_current);
     }
 }
@@ -749,14 +849,19 @@ void debugRenderData() {
     SetTextLineSpacing(TEXT_FONT_SIZE);
     DrawText(
         TextFormat(
-            "Game:\n> FPS: %i\n> State: %s\n\nPlayer:\n> Position: x.%.1f, y.%.1f\n> Velocity: x.%.1f, y.%.1f\n> Alive: %s\n> Points: %i\n",
+            "Game:\n> FPS: %i\n> State: %s\n> Time: %.02fs\n\nPlayer:\n> Position: x.%.1f, y.%.1f\n> Velocity: x.%.1f, y.%.1f\n> Alive: %s\n> Points: %i\n",
             GetFPS(),
             stateMachineGetName(),
+            GlobalState.Game.gameplay_time,
+
             GlobalState.PlayerGlobals.player.position.x,
             GlobalState.PlayerGlobals.player.position.y,
+
             GlobalState.PlayerGlobals.player.velocity.x,
             GlobalState.PlayerGlobals.player.velocity.y,
+
             GlobalState.PlayerGlobals.player.game_over ? "false" : "true",
+            
             GlobalState.PlayerGlobals.player.points
         ),
         4,
@@ -771,14 +876,26 @@ void debugRenderCollisions() {
         return;
     }
 
-    for(int i = 0; i < OBSTACLE_CAPACITY; i++) {
+    for(int i = 0; i < OBSTACLE_CAPACITY - 1; i++) {
         Obstacle* obstacle = &GlobalState.ObstacleGlobals.obstacle_list.list[i];
+        Obstacle* obstacle_next = &GlobalState.ObstacleGlobals.obstacle_list.list[i + 1];
 
-        Rectangle point0_rect = { obstacle->point0.x - OBSTACLE_WIDTH / 2.0f, obstacle->point0.y - OBSTACLE_HEIGHT, OBSTACLE_WIDTH, OBSTACLE_HEIGHT };
-        Rectangle point1_rect = { obstacle->point1.x - OBSTACLE_WIDTH / 2.0f, obstacle->point1.y, OBSTACLE_WIDTH, OBSTACLE_HEIGHT };
+        Rectangle point0_rect = { 
+            obstacle->point0.x - OBSTACLE_WIDTH / 2.0f, 
+            obstacle->point0.y - Vector2Distance(obstacle->point0, (Vector2) { obstacle->point0.x, 0.0f } ), 
+            OBSTACLE_WIDTH, 
+            Vector2Distance(obstacle->point0, (Vector2) { obstacle->point0.x, 0.0f }) 
+        };
 
-        DrawRectangleLinesEx(point0_rect, 1.0f, GREEN);
-        DrawRectangleLinesEx(point1_rect, 1.0f, GREEN);
+        Rectangle point1_rect = { 
+            obstacle->point1.x - OBSTACLE_WIDTH / 2.0f, 
+            obstacle->point1.y, 
+            OBSTACLE_WIDTH, 
+            Vector2Distance(obstacle->point1, (Vector2) { obstacle->point1.x, renderGetSize().y }) 
+        };
+
+        DrawLineEx(obstacle->point0, obstacle_next->point0, 1.0f, GREEN);
+        DrawLineEx(obstacle->point1, obstacle_next->point1, 1.0f, GREEN);
 
         if(obstacle->has_collectible) {
             DrawCircleLinesV(
@@ -792,4 +909,119 @@ void debugRenderCollisions() {
     Player* player = &GlobalState.PlayerGlobals.player;
     Rectangle player_rect = { player->position.x - (player->physical_size.x / 2.0f), player->position.y - (player->physical_size.y / 2.0f), player->physical_size.x, player->physical_size.y };
     DrawRectangleLinesEx(player_rect, 1.0f, GREEN);
+}
+
+void gameInit() {
+    GlobalState.Game.gameplay_state_machine = STATE_START;
+
+    GlobalState.PlayerGlobals.player = playerInit(
+        (Vector2) { 
+            renderGetSize().x / 2.0f - 256.0f, 
+            renderGetSize().y / 2.0f 
+        }
+    );
+
+    GlobalState.PlayerGlobals.camera = (Camera2D) {
+        .offset = { renderGetSize().x / 2.0f, renderGetSize().y / 2.0f },
+        .target = { renderGetSize().x / 2.0f, renderGetSize().y / 2.0f},
+        .zoom = 1.0f
+    };
+
+    GlobalState.ObstacleGlobals.obstacle_list = obstacleListInit();
+
+    GlobalState.Debug.render_data = false;
+    GlobalState.Debug.render_colliders = false;
+
+    GlobalState.Game.gameplay_time = 0.0f;
+    GlobalState.Game.quit = false;
+}
+
+void resourcesLoad(){
+    // player resources
+    GlobalState.Resources.player_sprite = LoadTexture("../res/graphics/player_sprite.png");
+
+    // collectible resources
+    GlobalState.Resources.collectible_textures[0] = LoadTexture("../res/graphics/collectible_common.png");
+    GlobalState.Resources.collectible_textures[1] = LoadTexture("../res/graphics/collectible_rare.png");
+    GlobalState.Resources.collectible_textures[2] = LoadTexture("../res/graphics/collectible_legendary.png");
+
+    SetTextureFilter(GlobalState.Resources.player_sprite, TEXTURE_FILTER_BILINEAR);
+
+    SetTextureFilter(GlobalState.Resources.collectible_textures[0], TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(GlobalState.Resources.collectible_textures[1], TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(GlobalState.Resources.collectible_textures[2], TEXTURE_FILTER_BILINEAR);
+}
+
+void resourcesUnload() {
+    // unloading player resources
+    UnloadTexture(GlobalState.Resources.player_sprite);
+
+    // unloading collectible resources
+    for(int i = 0; i < 3; i++) {
+        UnloadTexture(GlobalState.Resources.collectible_textures[i]);
+    }
+}
+
+internal bool collisionCheckRectLine(Rectangle rect, Vector2 line_start, Vector2 line_end) {
+    // Source: https://www.jeffreythompson.org/collision-detection/line-rect.php
+
+    Vector2 collision_points = Vector2Zero();
+
+    bool collision_rect_up = CheckCollisionLines(
+        (Vector2) {
+            rect.x,
+            rect.y
+        }, 
+        (Vector2) {
+            rect.x + rect.width,
+            rect.y
+        },
+        line_start, 
+        line_end, 
+        &collision_points
+    );    
+
+    bool collision_rect_down = CheckCollisionLines(
+        (Vector2) {
+            rect.x,
+            rect.y + rect.height
+        }, 
+        (Vector2) {
+            rect.x + rect.width,
+            rect.y + rect.height
+        },
+        line_start, 
+        line_end, 
+        &collision_points
+    );    
+
+    bool collision_rect_left = CheckCollisionLines(
+        (Vector2) {
+            rect.x,
+            rect.y
+        }, 
+        (Vector2) {
+            rect.x,
+            rect.y + rect.height
+        },
+        line_start, 
+        line_end, 
+        &collision_points
+    );    
+
+    bool collision_rect_right = CheckCollisionLines(
+        (Vector2) {
+            rect.x + rect.width,
+            rect.y
+        }, 
+        (Vector2) {
+            rect.x + rect.width,
+            rect.y + rect.height
+        },
+        line_start, 
+        line_end, 
+        &collision_points
+    );
+
+    return collision_rect_up || collision_rect_down || collision_rect_left || collision_rect_right;
 }
