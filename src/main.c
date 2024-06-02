@@ -31,6 +31,7 @@
 
 #include "raylib.h"
 #include "raymath.h"
+#include "rlgl.h"
 
 // macro deffinitions
 #define GAME_BACKGROUND_COLOR 0x4d9be6ff
@@ -80,12 +81,16 @@ typedef struct Player {
     float sprite_rotation;
 
     uint32_t points;
+    uint32_t collected_common;
+    uint32_t collected_rare;
+    uint32_t collected_legendary;
     bool game_over; // You crash once - this value is set to true;
 } Player;
 
 Player playerInit(Vector2 position);
 void playerUpdate();
 void playerRender();
+void playerRenderScore(Vector2 position, Vector2 text_offset);
 void playerUnload();
 
 void playerSetPosition(Vector2 position);
@@ -149,6 +154,7 @@ struct {
         float gameplay_time;
 
         bool quit;
+        bool start_key_held;
     } Game;
 
     struct {
@@ -186,6 +192,7 @@ void resourcesLoad();
 void resourcesUnload();
 
 internal bool collisionCheckRectLine(Rectangle rect, Vector2 line_start, Vector2 line_end);
+internal void renderDrawLineGradient(Vector2 start, Vector2 end, int thickness, Color a, Color b);
 
 int main(int argc, char** argv) {
     const char* TITLE = "Summer Jam 2024";
@@ -210,8 +217,8 @@ int main(int argc, char** argv) {
     GlobalState.Game.render_texture = LoadRenderTexture(WIDTH, HEIGHT);
     SetTextureFilter(GlobalState.Game.render_texture.texture, TEXTURE_FILTER_BILINEAR);
 
-    gameInit();
     resourcesLoad();
+    gameInit();
 
     while(!WindowShouldClose() && !GlobalState.Game.quit) {
         // Update your game logic here...
@@ -323,6 +330,16 @@ int main(int argc, char** argv) {
             } break;
 
             case STATE_GAMEPLAY: {
+                playerRenderScore(
+                    (Vector2) { 
+                        8.0f, 
+                        renderGetSize().y - 240.0f 
+                    }, 
+                    (Vector2) { 
+                        32.0f, 
+                        16.0f 
+                    }
+                );
 
             } break;
 
@@ -466,11 +483,18 @@ Player playerInit(Vector2 position) {
     Player result = {
         .position = position,
         .velocity = Vector2Zero(),
-        .physical_size = { 48.0f, 48.0f },
+        .physical_size = { 
+            GlobalState.Resources.player_sprite.width / 2.0f,
+            GlobalState.Resources.player_sprite.width / 2.0f,
+        },
 
         .sprite_rotation = 0.0f,
 
         .points = 0,
+        .collected_common = 0,
+        .collected_rare = 0,
+        .collected_legendary = 0,
+        
         .game_over = false
     };
 
@@ -494,7 +518,11 @@ void playerUpdate() {
     // ... Then we can menage the general gameplay stuff!
     GlobalState.PlayerGlobals.player.velocity.x = PLAYER_SPEED * GetFrameTime();
 
-    if(IsKeyDown(KEY_SPACE) || IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+    if((IsKeyReleased(KEY_SPACE) || IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) && GlobalState.Game.start_key_held) {
+        GlobalState.Game.start_key_held = false;
+    }
+
+    if((IsKeyDown(KEY_SPACE) || IsMouseButtonDown(MOUSE_BUTTON_LEFT)) && !GlobalState.Game.start_key_held) {
         GlobalState.PlayerGlobals.player.velocity.y -= PLAYER_GRAVITY_Y * 2.0f * GetFrameTime();
     }
 
@@ -528,6 +556,44 @@ void playerRender() {
         Vector2Divide((Vector2) { GlobalState.Resources.player_sprite.width, GlobalState.Resources.player_sprite.height }, (Vector2) { 2.0f, 2.0f }), 
         player->sprite_rotation, 
         WHITE
+    );
+}
+
+void playerRenderScore(Vector2 position, Vector2 text_offset) {
+    Player* player = &GlobalState.PlayerGlobals.player;
+    int sprite_width = GlobalState.Resources.collectible_textures[0].width + text_offset.x;
+    int sprite_height = GlobalState.Resources.collectible_textures[0].height + text_offset.y;
+
+    // rendering all the sprites in the column
+    for(int i = 0; i < 3; i++) {
+        DrawTexturePro(
+            GlobalState.Resources.collectible_textures[i], 
+            (Rectangle) {
+                0.0f,
+                0.0f,
+                GlobalState.Resources.collectible_textures[0].width,
+                GlobalState.Resources.collectible_textures[0].height
+            }, 
+            (Rectangle) {
+                position.x,
+                position.y + sprite_height * i,
+                GlobalState.Resources.collectible_textures[0].width,
+                GlobalState.Resources.collectible_textures[0].height
+            }, 
+            Vector2Zero(), 
+            0.0f, 
+            WHITE
+        );
+    }
+
+    SetTextLineSpacing(sprite_height);
+
+    DrawText(
+        TextFormat("%u\n%u\n%u", player->collected_common, player->collected_rare, player->collected_legendary), 
+        position.x + sprite_width, 
+        position.y, 
+        sprite_height, 
+        GetColor(TEXT_COLOR_LIGHT)
     );
 }
 
@@ -566,11 +632,11 @@ void playerCheckCollisions() {
         if(obstacle->has_collectible) {
             if(CheckCollisionCircleRec(obstacle->collectible.position, COLLECTLIBLE_RADIUS, player_rect)) {
                 switch (obstacle->collectible.collectible_rarity) {
-                    case COLLECTIBLE_COMMON:            player->points++;    break;
-                    case COLLECTLIBLE_RARE:             player->points += 2; break;
-                    case COLLECTLIBLE_LEGENDARY:        player->points += 4; break;
-                    case COLLECTIBLE_RARITY_COUNT:      player->points += 0; break;
-                    default:                            player->points += 0; break;
+                    case COLLECTIBLE_COMMON:            player->points++;       player->collected_common++;     break;
+                    case COLLECTLIBLE_RARE:             player->points += 2;    player->collected_rare++;       break;
+                    case COLLECTLIBLE_LEGENDARY:        player->points += 4;    player->collected_legendary++;  break;
+                    case COLLECTIBLE_RARITY_COUNT:      player->points += 0;                                    break;
+                    default:                            player->points += 0;                                    break;
                 }
 
                 obstacle->has_collectible = false;
@@ -717,10 +783,13 @@ void obstacleListUpdate() {
 }
 
 void obstacleListRender() {
+    const int LINE_THICKNESS = 4;
+
     for(int obstacle_index = 0; obstacle_index < OBSTACLE_CAPACITY - 1; obstacle_index++) {
         Obstacle* obstacle_current = &GlobalState.ObstacleGlobals.obstacle_list.list[obstacle_index];
         Obstacle* obstacle_next = &GlobalState.ObstacleGlobals.obstacle_list.list[obstacle_index + 1];
         
+
         Vector2 points0[4] = {
             obstacle_current->point0,
             obstacle_next->point0,
@@ -744,10 +813,29 @@ void obstacleListRender() {
                 points0_index / (OBSTACLE_WIDTH / 2.0f)
             );
 
+            /*
+        
             DrawLineEx(
                 spline_point, 
                 (Vector2) { spline_point.x, 0.0f }, 
                 4.0f, 
+                GetColor(OBSTACLE_UPPER_COLOR)
+            );
+        
+            */
+
+            DrawRectangleGradientV(
+                spline_point.x, 
+                0.0f, 
+                LINE_THICKNESS, 
+                Vector2Distance(
+                    spline_point, 
+                    (Vector2) { 
+                        spline_point.x, 
+                        0.0f
+                    }
+                ), 
+                GetColor(0x3e3546ff), 
                 GetColor(OBSTACLE_UPPER_COLOR)
             );
         }
@@ -761,11 +849,31 @@ void obstacleListRender() {
                 points1_index / (OBSTACLE_WIDTH / 2.0f)
             );
 
+            /*
+
             DrawLineEx(
                 spline_point, 
                 (Vector2) { spline_point.x, renderGetSize().y }, 
                 4.0f, 
                 GetColor(OBSTACLE_LOWER_COLOR)
+            );
+                        
+            */
+
+
+            DrawRectangleGradientV(
+                spline_point.x, 
+                spline_point.y, 
+                LINE_THICKNESS, 
+                Vector2Distance(
+                    spline_point, 
+                    (Vector2) { 
+                        spline_point.x, 
+                        renderGetSize().y + 1
+                    }
+                ), 
+                GetColor(OBSTACLE_LOWER_COLOR),
+                GetColor(0xf79617ff) 
             );
         }
 
@@ -774,7 +882,7 @@ void obstacleListRender() {
             points0[2], 
             points0[3], 
             points0[1], 
-            4.0f,
+            LINE_THICKNESS,
             GetColor(GAME_LINES_COLOR)    
         );
 
@@ -783,7 +891,7 @@ void obstacleListRender() {
             points1[2], 
             points1[3], 
             points1[1], 
-            4.0f,
+            LINE_THICKNESS,
             GetColor(GAME_LINES_COLOR)
         );
 
@@ -934,6 +1042,7 @@ void gameInit() {
 
     GlobalState.Game.gameplay_time = 0.0f;
     GlobalState.Game.quit = false;
+    GlobalState.Game.start_key_held = true;
 }
 
 void resourcesLoad(){
@@ -1024,4 +1133,21 @@ internal bool collisionCheckRectLine(Rectangle rect, Vector2 line_start, Vector2
     );
 
     return collision_rect_up || collision_rect_down || collision_rect_left || collision_rect_right;
+}
+
+internal void renderDrawLineGradient(Vector2 start, Vector2 end, int thickness, Color a, Color b) {
+    for(int i = 0; i < thickness; i++) {
+        rlBegin(RL_QUADS);
+
+            rlNormal3f(0.0f, 0.0f, 1.0f);
+
+            rlColor4ub(a.r, a.g, a.b, a.a);
+            rlVertex2f(start.x + i, start.y);
+
+            rlColor4ub(b.r, b.g, b.b, b.a);
+            rlVertex2f(end.x + i, end.y);
+
+        rlEnd();
+
+    }
 }
