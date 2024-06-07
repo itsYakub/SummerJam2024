@@ -36,11 +36,10 @@
 // macro deffinitions
 #define GAME_TITLE "Floppy Submarine"
 #define GAME_RESUME_TIME 3.0f
-#define GAME_BACKGROUND_COLOR 0x4d9be6ff
 #define GAME_LINES_COLOR 0x2e222fff
 
-#define TEXT_FONT_SIZE GlobalState.Resources.game_font_default.baseSize
-#define TEXT_FONT_LARGE_SIZE GlobalState.Resources.game_font_large.baseSize
+#define TEXT_FONT_SIZE GlobalState.Resources.font_game_default.baseSize
+#define TEXT_FONT_LARGE_SIZE GlobalState.Resources.font_game_large.baseSize
 #define TEXT_FONT_SPACING 4
 #define TEXT_COLOR_DARK 0x2e222fff
 #define TEXT_COLOR_LIGHT 0xffffffff 
@@ -55,16 +54,16 @@
 
 #define OBSTACLE_CAPACITY 8 // The size of the Obstacle buffer (where all the obstacle objects are stored)
 #define OBSTACLE_WIDTH 512
-#define OBSTACLE_DIST_INITIAL renderGetSize().y - 128.0f
-#define OBSTACLE_DIST_REDUCTION 16
+#define OBSTACLE_DIST_INITIAL (renderGetSize().y - 128.0f)
+#define OBSTACLE_DIST_REDUCTION 4
 #define OBSTACLE_DIST_MIN 160.0f
 #define OBSTACLE_UPPER_COLOR 0x7f708aff
 #define OBSTACLE_LOWER_COLOR 0xf9c22bff
 
-#define RESOURCES_SPRITE_PLAYER GlobalState.Resources.player_sprite
-#define RESOURCES_SPRITE_COLLECTIBLES GlobalState.Resources.collectible_sprite
-#define RESOURCES_FONT_DEFAULT GlobalState.Resources.game_font_default
-#define RESOURCES_FONT_LARGE GlobalState.Resources.game_font_large
+#define RESOURCES_SPRITE_PLAYER GlobalState.Resources.sprite_player
+#define RESOURCES_SPRITE_COLLECTIBLES GlobalState.Resources.sprite_collectibles
+#define RESOURCES_FONT_DEFAULT GlobalState.Resources.font_game_default
+#define RESOURCES_FONT_LARGE GlobalState.Resources.font_game_large
 
 #define PARTICLES_CAPACITY 128
 #define PARTICLE_GRAVITY_X 0.0
@@ -110,15 +109,13 @@ typedef struct {
 
     Timer spawn_timer;
 
-    Vector2 initial_particle_direction;
     float initial_particle_velocity_force;
-
     Vector2* particle_system_target;
 
     int current_particle_index;
 } ParticleSystem;
 
-ParticleSystem particleSystemInit(Vector2* target, float spawn_time, float velocity_force, Vector2 direction);
+ParticleSystem particleSystemInit(Vector2* target, float spawn_time, float velocity_force);
 void particleSystemUpdate(ParticleSystem* particle_system);
 void particleSystemRender(ParticleSystem* particle_system);
 
@@ -201,6 +198,20 @@ void obstacleListUpdate();
 void obstacleListRender();
 void obstacleListLoopObstacles();
 
+typedef struct {
+    Vector2 bg_pos0; // this is the position of the first rendered texture
+    Vector2 bg_pos1; // this is the position of the second rendered texture
+
+    // Both textures will be rendered at the same time.
+    // What's important is that if on of them will be out of bounds (the whole texture isn't visible on the screen),
+    // then we'll move it next to the other vector (plus the size that we use for rendering).
+    // (Check the 'backgroundUpdate' for more information about how it works).
+} Background;
+
+Background backgroundInit();
+void backgroundUpdate(Background* background);
+void backgroundRender(Background* background);
+
 struct {
     struct {
         GameplayStateMachine gameplay_state_machine;
@@ -213,14 +224,10 @@ struct {
         bool start_key_held;
     } Game;
 
-    struct {
-        Player player;
-        Camera2D camera;
-    } PlayerGlobals;
-
-    struct {
-        ObstacleList obstacle_list;
-    } ObstacleGlobals;
+    Background background;
+    Player player;
+    Camera2D camera;
+    ObstacleList obstacle_list;
 
     struct {
         bool render_data;
@@ -228,12 +235,16 @@ struct {
     } Debug;
 
     struct {
-        Texture2D player_sprite;
-        Texture2D collectible_sprite[3];
-        Texture2D particle_sprite;
+        Texture2D sprite_background;
+        Texture2D sprite_player;
+        Texture2D sprite_collectibles[3];
+        Texture2D sprite_particle_bubble;
 
-        Font game_font_default;
-        Font game_font_large;
+        Font font_game_default;
+        Font font_game_large;
+
+        Sound sound_particle_bubble;
+        Sound sound_collectible_pickup;
     } Resources;
 } GlobalState;
 
@@ -305,14 +316,15 @@ int main(int argc, char** argv) {
                 playerUpdate();
                 playerCheckCollisions();
                 obstacleListUpdate();
-                GlobalState.PlayerGlobals.camera.target.x += PLAYER_SPEED * GetFrameTime();
+                backgroundUpdate(&GlobalState.background);
+                GlobalState.camera.target.x += PLAYER_SPEED * GetFrameTime();
                 GlobalState.Game.gameplay_time += GetFrameTime();
 
                 if(IsKeyPressed(KEY_ESCAPE)) {
                     stateMachineSet(STATE_PAUSE);
                 }
 
-                if(GlobalState.PlayerGlobals.player.game_over) {
+                if(GlobalState.player.game_over) {
                     stateMachineSet(STATE_GAMEOVER);
                 }
             } break;
@@ -344,13 +356,14 @@ int main(int argc, char** argv) {
         }
 
         BeginTextureMode(GlobalState.Game.render_texture);
-        ClearBackground(GetColor(GAME_BACKGROUND_COLOR));
+        ClearBackground(BLACK);
 
         // Render your graphics here...
 
         // State-Independent rendering...
-        BeginMode2D(GlobalState.PlayerGlobals.camera);
+        BeginMode2D(GlobalState.camera);
 
+            backgroundRender(&GlobalState.background);
             playerRender();
             obstacleListRender();
             debugRenderCollisions();
@@ -416,7 +429,7 @@ int main(int argc, char** argv) {
                 );
 
                 const char* text0 = "Game Over!";
-                const char* text1 = TextFormat("> Total Time: %.02fs\n> Total Score: %i", GlobalState.Game.gameplay_time, GlobalState.PlayerGlobals.player.points);
+                const char* text1 = TextFormat("> Total Time: %.02fs\n> Total Score: %i", GlobalState.Game.gameplay_time, GlobalState.player.points);
                 const char* text2 = "Press ENTER to RESTART or ESCAPE to QUIT...";
 
                 Vector2 text0_size = MeasureTextEx(RESOURCES_FONT_LARGE, text0, TEXT_FONT_LARGE_SIZE, TEXT_FONT_SPACING);
@@ -564,6 +577,114 @@ int main(int argc, char** argv) {
     return 0;
 }
 
+void gameInit() {
+    GlobalState.Game.gameplay_state_machine = STATE_START;
+
+    GlobalState.player = playerInit(
+        (Vector2) { 
+            renderGetSize().x / 2.0f - 256.0f, 
+            renderGetSize().y / 2.0f 
+        }
+    );
+
+    GlobalState.camera = (Camera2D) {
+        .offset = { renderGetSize().x / 2.0f, renderGetSize().y / 2.0f },
+        .target = { renderGetSize().x / 2.0f, renderGetSize().y / 2.0f},
+        .zoom = 1.0f
+    };
+
+    GlobalState.player.particle_system = particleSystemInit(
+        &GlobalState.player.position, 
+        0.05f,
+        1.0f
+    );
+
+    GlobalState.obstacle_list = obstacleListInit();
+
+    GlobalState.background = backgroundInit();
+
+    GlobalState.Debug.render_data = false;
+    GlobalState.Debug.render_colliders = false;
+
+    GlobalState.Game.gameplay_time = 0.0f;
+    GlobalState.Game.resume_countdown = GAME_RESUME_TIME;
+    GlobalState.Game.quit = false;
+    GlobalState.Game.start_key_held = true;
+}
+
+void resourcesLoad(){
+    // background resource
+    GlobalState.Resources.sprite_background = LoadTexture("../res/graphics/game_background.png");
+
+    // player resources
+    GlobalState.Resources.sprite_player = LoadTexture("../res/graphics/player_sprite.png");
+
+    // collectible resources
+    GlobalState.Resources.sprite_collectibles[0] = LoadTexture("../res/graphics/collectible_common.png");
+    GlobalState.Resources.sprite_collectibles[1] = LoadTexture("../res/graphics/collectible_rare.png");
+    GlobalState.Resources.sprite_collectibles[2] = LoadTexture("../res/graphics/collectible_legendary.png");
+
+    // particle resources
+    GlobalState.Resources.sprite_particle_bubble = LoadTexture("../res/graphics/particle_bubble.png");
+
+    // font resources
+    GlobalState.Resources.font_game_default = LoadFontEx(
+        "../res/fonts/Fredoka/static/Fredoka-Bold.ttf",
+        32,
+        0,
+        256
+    );  
+
+    GlobalState.Resources.font_game_large = LoadFontEx(
+        "../res/fonts/Fredoka/static/Fredoka-Bold.ttf",
+        96,
+        0,
+        256
+    );     
+
+    // sound resources
+    GlobalState.Resources.sound_particle_bubble = LoadSound("../res/sfx/sfx_bubble.mp3");
+    GlobalState.Resources.sound_collectible_pickup = LoadSound("../res/sfx/sfx_collectible_3.wav");
+
+    // Setting up the filtering for the graphical res...
+    SetTextureFilter(GlobalState.Resources.sprite_background, TEXTURE_FILTER_BILINEAR);
+
+    SetTextureFilter(GlobalState.Resources.sprite_player, TEXTURE_FILTER_BILINEAR);
+
+    SetTextureFilter(GlobalState.Resources.sprite_collectibles[0], TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(GlobalState.Resources.sprite_collectibles[1], TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(GlobalState.Resources.sprite_collectibles[2], TEXTURE_FILTER_BILINEAR);
+
+    SetTextureFilter(GlobalState.Resources.sprite_particle_bubble, TEXTURE_FILTER_BILINEAR);
+
+    SetTextureFilter(GlobalState.Resources.font_game_default.texture, TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(GlobalState.Resources.font_game_large.texture, TEXTURE_FILTER_BILINEAR);
+}
+
+void resourcesUnload() {
+    // unload background resource
+    UnloadTexture(GlobalState.Resources.sprite_background);
+
+    // unloading player resources
+    UnloadTexture(GlobalState.Resources.sprite_player);
+
+    // unloading collectible resources
+    for(int i = 0; i < 3; i++) {
+        UnloadTexture(GlobalState.Resources.sprite_collectibles[i]);
+    }
+
+    // unloading particle resources
+    UnloadTexture(GlobalState.Resources.sprite_particle_bubble);
+
+    // unloading fonts
+    UnloadFont(GlobalState.Resources.font_game_default);
+    UnloadFont(GlobalState.Resources.font_game_large);
+
+    // unloading sounds
+    UnloadSound(GlobalState.Resources.sound_particle_bubble);
+    UnloadSound(GlobalState.Resources.sound_collectible_pickup);
+}
+
 Timer timerInit(float time) {
     return (Timer) {
         .time_initial = time,
@@ -610,13 +731,12 @@ Particle particleInit(Vector2 position, Vector2 velocity) {
     };
 }
 
-ParticleSystem particleSystemInit(Vector2* target, float spawn_time, float velocity_force, Vector2 direction) {
+ParticleSystem particleSystemInit(Vector2* target, float spawn_time, float velocity_force) {
     return (ParticleSystem) {
         .current_particle_index = 0,
 
         .particle_system_target = target,
 
-        .initial_particle_direction = direction,
         .initial_particle_velocity_force = velocity_force,
 
         .spawn_timer = timerInit(spawn_time)
@@ -634,8 +754,8 @@ void particleSystemUpdate(ParticleSystem* particle_system) {
         particle_system->particles[particle_system->current_particle_index] = particleInit(
             *particle_system->particle_system_target, 
             (Vector2) {
-                0,
-                sin(GetRandomValue(-45, 45))
+                particle_system->initial_particle_velocity_force * cos(GetRandomValue(-360, 360)),
+                particle_system->initial_particle_velocity_force * sin(GetRandomValue(-360, 360))
             }
         );
 
@@ -646,7 +766,7 @@ void particleSystemUpdate(ParticleSystem* particle_system) {
         timerRestart(&particle_system->spawn_timer);
     }
 
-    for(int i = 0; i < PARTICLES_CAPACITY; i++) {\
+    for(int i = 0; i < PARTICLES_CAPACITY; i++) {
         if(!particle_system->particles[i].created) {
             break;
         }
@@ -683,18 +803,18 @@ void particleSystemRender(ParticleSystem* particle_system) {
         }
 
         DrawTexturePro(
-            GlobalState.Resources.particle_sprite, 
+            GlobalState.Resources.sprite_particle_bubble, 
             (Rectangle) {
                 0.0f,
                 0.0f,
-                GlobalState.Resources.particle_sprite.width,
-                GlobalState.Resources.particle_sprite.height
+                GlobalState.Resources.sprite_particle_bubble.width,
+                GlobalState.Resources.sprite_particle_bubble.height
             }, 
             (Rectangle) {
                 particle_system->particles[particle_index].position.x,
                 particle_system->particles[particle_index].position.y,
-                GlobalState.Resources.particle_sprite.width,
-                GlobalState.Resources.particle_sprite.height
+                GlobalState.Resources.sprite_particle_bubble.width,
+                GlobalState.Resources.sprite_particle_bubble.height
             }, 
             Vector2Zero(), 
             0.0f, 
@@ -708,8 +828,8 @@ Player playerInit(Vector2 position) {
         .position = position,
         .velocity = Vector2Zero(),
         .physical_size = { 
-            GlobalState.Resources.player_sprite.width / 2.0f,
-            GlobalState.Resources.player_sprite.width / 2.0f,
+            GlobalState.Resources.sprite_player.width / 2.0f,
+            GlobalState.Resources.sprite_player.width / 2.0f,
         },
 
         .sprite_rotation = 0.0f,
@@ -726,11 +846,11 @@ Player playerInit(Vector2 position) {
 }
 
 void playerUpdate() {
-    Player* player = &GlobalState.PlayerGlobals.player;
+    Player* player = &GlobalState.player;
 
     // Firstly, we apply our physics forces ..
     player->velocity = Vector2Add(
-        GlobalState.PlayerGlobals.player.velocity, 
+        GlobalState.player.velocity, 
         (Vector2) { PLAYER_GRAVITY_X * GetFrameTime(), PLAYER_GRAVITY_Y * GetFrameTime() }
     );
 
@@ -760,56 +880,63 @@ void playerUpdate() {
 }
 
 void playerRender() {
-    Player* player = &GlobalState.PlayerGlobals.player;
+    Player* player = &GlobalState.player;
 
+    // it's funny how this one simple rotation interpolation causes the submarine to feel floppy...
     player->sprite_rotation = Lerp(
         player->sprite_rotation,
-        GlobalState.PlayerGlobals.player.velocity.y * 4.0f,
-        20.0f * GetFrameTime()
+        GlobalState.player.velocity.y * (PLAYER_GRAVITY_Y / 4.0f),
+        PLAYER_GRAVITY_Y * GetFrameTime()
+    );
+
+    player->sprite_rotation = Clamp(
+        player->sprite_rotation,
+        -PLAYER_GRAVITY_Y * 3,
+        PLAYER_GRAVITY_Y * 3
     );
 
     particleSystemRender(&player->particle_system);
 
     DrawTexturePro(
-        GlobalState.Resources.player_sprite, 
+        GlobalState.Resources.sprite_player, 
         (Rectangle) {
             0.0f,
             0.0f,
-            GlobalState.Resources.player_sprite.width,
-            GlobalState.Resources.player_sprite.height
+            GlobalState.Resources.sprite_player.width,
+            GlobalState.Resources.sprite_player.height
         }, 
         (Rectangle) {
             player->position.x,
             player->position.y,
-            GlobalState.Resources.player_sprite.width,
-            GlobalState.Resources.player_sprite.height
+            GlobalState.Resources.sprite_player.width,
+            GlobalState.Resources.sprite_player.height
         }, 
-        Vector2Divide((Vector2) { GlobalState.Resources.player_sprite.width, GlobalState.Resources.player_sprite.height }, (Vector2) { 2.0f, 2.0f }), 
+        Vector2Divide((Vector2) { GlobalState.Resources.sprite_player.width, GlobalState.Resources.sprite_player.height }, (Vector2) { 2.0f, 2.0f }), 
         player->sprite_rotation, 
         WHITE
     );
 }
 
 void playerRenderScore(Vector2 position, Vector2 text_offset) {
-    Player* player = &GlobalState.PlayerGlobals.player;
-    int sprite_width = GlobalState.Resources.collectible_sprite[0].width + text_offset.x;
-    int sprite_height = GlobalState.Resources.collectible_sprite[0].height + text_offset.y;
+    Player* player = &GlobalState.player;
+    int sprite_width = GlobalState.Resources.sprite_collectibles[0].width + text_offset.x;
+    int sprite_height = GlobalState.Resources.sprite_collectibles[0].height + text_offset.y;
 
     // rendering all the sprites in the column
     for(int i = 0; i < 3; i++) {
         DrawTexturePro(
-            GlobalState.Resources.collectible_sprite[i], 
+            GlobalState.Resources.sprite_collectibles[i], 
             (Rectangle) {
                 0.0f,
                 0.0f,
-                GlobalState.Resources.collectible_sprite[0].width,
-                GlobalState.Resources.collectible_sprite[0].height
+                GlobalState.Resources.sprite_collectibles[0].width,
+                GlobalState.Resources.sprite_collectibles[0].height
             }, 
             (Rectangle) {
                 position.x,
                 position.y + sprite_height * i,
-                GlobalState.Resources.collectible_sprite[0].width,
-                GlobalState.Resources.collectible_sprite[0].height
+                GlobalState.Resources.sprite_collectibles[0].width,
+                GlobalState.Resources.sprite_collectibles[0].height
             }, 
             Vector2Zero(), 
             0.0f, 
@@ -847,25 +974,25 @@ bool playerInputGetDown() {
 }
 
 void playerSetPosition(Vector2 position) {
-    GlobalState.PlayerGlobals.player.position_prev = GlobalState.PlayerGlobals.player.position;
-    GlobalState.PlayerGlobals.player.position = position;
+    GlobalState.player.position_prev = GlobalState.player.position;
+    GlobalState.player.position = position;
 }
 
 void playerIncrementPosition(Vector2 incrementation) {
-    GlobalState.PlayerGlobals.player.position_prev = GlobalState.PlayerGlobals.player.position;
-    GlobalState.PlayerGlobals.player.position = Vector2Add(GlobalState.PlayerGlobals.player.position, incrementation);
+    GlobalState.player.position_prev = GlobalState.player.position;
+    GlobalState.player.position = Vector2Add(GlobalState.player.position, incrementation);
 }
 
 void playerSetVelocity(Vector2 velocity) {
-    GlobalState.PlayerGlobals.player.velocity = velocity;
+    GlobalState.player.velocity = velocity;
 }
 
 void playerCheckCollisions() {
-    Player* player = &GlobalState.PlayerGlobals.player;
+    Player* player = &GlobalState.player;
 
     for(int obstacles_to_check = 0; obstacles_to_check < OBSTACLE_CAPACITY - 1; obstacles_to_check++) {
-        Obstacle* obstacle = &GlobalState.ObstacleGlobals.obstacle_list.list[obstacles_to_check];
-        Obstacle* obstacle_next = &GlobalState.ObstacleGlobals.obstacle_list.list[obstacles_to_check + 1];
+        Obstacle* obstacle = &GlobalState.obstacle_list.list[obstacles_to_check];
+        Obstacle* obstacle_next = &GlobalState.obstacle_list.list[obstacles_to_check + 1];
 
         Rectangle player_rect = { 
             player->position.x - (player->physical_size.x / 2.0f), 
@@ -923,6 +1050,8 @@ void playerCheckCollisions() {
                     default:                            player->points += 0;                                    break;
                 }
 
+                PlaySound(GlobalState.Resources.sound_collectible_pickup);
+
                 obstacle->has_collectible = false;
             }
         }
@@ -973,11 +1102,11 @@ Collectible collectibleInit(Obstacle* obstacle) {
     int collectible_rarity_random_index = GetRandomValue(0, 30);
     // .. which then helps us assign the proper rarity to our collectible.
 
-    if(collectible_rarity_random_index >= 0 && collectible_rarity_random_index < 11) { // If 'collectible_rarity_random_index' is in range 0 - 10, then the rarity is COLLECTIBLE_COMMON (33%)
+    if(collectible_rarity_random_index >= 0 && collectible_rarity_random_index < 16) { // If 'collectible_rarity_random_index' is in range 0 - 15, then the rarity is COLLECTIBLE_COMMON (50%)
         result.collectible_rarity = COLLECTIBLE_COMMON;
-    } else if(collectible_rarity_random_index >= 11 && collectible_rarity_random_index < 21) { // Otherwise, if 'collectible_rarity_random_index' is in range 11 - 20, then the rarity is COLLECTLIBLE_RARE (33%)
+    } else if(collectible_rarity_random_index >= 16 && collectible_rarity_random_index < 26) { // Otherwise, if 'collectible_rarity_random_index' is in range 16 - 25, then the rarity is COLLECTLIBLE_RARE (33%)
         result.collectible_rarity = COLLECTLIBLE_RARE;
-    } else if(collectible_rarity_random_index >= 21 && collectible_rarity_random_index < 31) { // lastly, if 'collectible_rarity_random_index' is in range 21 - 30, then the rarity is COLLECTLIBLE_LEGENDARY (33%)
+    } else if(collectible_rarity_random_index >= 26 && collectible_rarity_random_index < 31) { // lastly, if 'collectible_rarity_random_index' is in range 26 - 30, then the rarity is COLLECTLIBLE_LEGENDARY (17%)
         result.collectible_rarity = COLLECTLIBLE_LEGENDARY;
     }
 
@@ -1005,12 +1134,12 @@ void collectibleRender(Obstacle* obstacle) {
     }
 
     DrawTexturePro(
-        GlobalState.Resources.collectible_sprite[obstacle->collectible.collectible_rarity],
+        GlobalState.Resources.sprite_collectibles[obstacle->collectible.collectible_rarity],
         (Rectangle) {
             0,
             0,
-            GlobalState.Resources.collectible_sprite[obstacle->collectible.collectible_rarity].width,
-            GlobalState.Resources.collectible_sprite[obstacle->collectible.collectible_rarity].height
+            GlobalState.Resources.sprite_collectibles[obstacle->collectible.collectible_rarity].width,
+            GlobalState.Resources.sprite_collectibles[obstacle->collectible.collectible_rarity].height
         },
         (Rectangle) {
             obstacle->collectible.position.x,
@@ -1079,7 +1208,7 @@ void obstacleListUpdate() {
     obstacleListLoopObstacles();
     
     for(int i = 0; i < OBSTACLE_CAPACITY; i++) {
-        collectibleUpdate(&GlobalState.ObstacleGlobals.obstacle_list.list[i]);
+        collectibleUpdate(&GlobalState.obstacle_list.list[i]);
     }
 }
 
@@ -1087,8 +1216,8 @@ void obstacleListRender() {
     const int LINE_THICKNESS = 4;
 
     for(int obstacle_index = 0; obstacle_index < OBSTACLE_CAPACITY - 1; obstacle_index++) {
-        Obstacle* obstacle_current = &GlobalState.ObstacleGlobals.obstacle_list.list[obstacle_index];
-        Obstacle* obstacle_next = &GlobalState.ObstacleGlobals.obstacle_list.list[obstacle_index + 1];
+        Obstacle* obstacle_current = &GlobalState.obstacle_list.list[obstacle_index];
+        Obstacle* obstacle_next = &GlobalState.obstacle_list.list[obstacle_index + 1];
         
 
         Vector2 points0[4] = {
@@ -1178,10 +1307,10 @@ void obstacleListRender() {
 }
 
 void obstacleListLoopObstacles() {
-    ObstacleList* obstacle_list = &GlobalState.ObstacleGlobals.obstacle_list;
+    ObstacleList* obstacle_list = &GlobalState.obstacle_list;
     Obstacle* obstacle_current = &obstacle_list->list[0];
         
-    if(GetWorldToScreen2D(obstacle_current->position, GlobalState.PlayerGlobals.camera).x < -OBSTACLE_WIDTH) {
+    if(GetWorldToScreen2D(obstacle_current->position, GlobalState.camera).x < -OBSTACLE_WIDTH) {
         for(int i = 0; i < OBSTACLE_CAPACITY - 1; i++) {
             obstacle_list->list[i] = obstacle_list->list[i + 1];
         }
@@ -1199,6 +1328,70 @@ void obstacleListLoopObstacles() {
             true
         );
     }
+}
+
+Background backgroundInit() {
+    return (Background) {
+        .bg_pos0 = Vector2Zero(),
+        .bg_pos1 = (Vector2) {
+            renderGetSize().x,
+            0.0f
+        }
+    };
+}
+
+void backgroundUpdate(Background* background) {
+    if(!background) {
+        return;
+    }
+
+    if(background->bg_pos0.x <= (GlobalState.camera.target.x - GlobalState.camera.offset.x) - renderGetSize().x) {
+        background->bg_pos0.x += (renderGetSize().x * 2.0f) + ((int) background->bg_pos0.x % (int) renderGetSize().x);
+    }
+    
+    if(background->bg_pos1.x <= (GlobalState.camera.target.x - GlobalState.camera.offset.x) - renderGetSize().x) {
+        background->bg_pos1.x += (renderGetSize().x * 2.0f) + ((int) background->bg_pos1.x % (int) renderGetSize().x);
+    }
+}
+
+void backgroundRender(Background* background) {
+    DrawTexturePro(
+        GlobalState.Resources.sprite_background, 
+        (Rectangle) {
+            0.0f,
+            0.0f,
+            GlobalState.Resources.sprite_background.width,
+            GlobalState.Resources.sprite_background.height
+        }, 
+        (Rectangle) {
+            background->bg_pos0.x,
+            background->bg_pos0.y,
+            renderGetSize().x,
+            renderGetSize().y
+        }, 
+        Vector2Zero(), 
+        0.0f, 
+        WHITE
+    );
+
+    DrawTexturePro(
+        GlobalState.Resources.sprite_background, 
+        (Rectangle) {
+            0.0f,
+            0.0f,
+            GlobalState.Resources.sprite_background.width,
+            GlobalState.Resources.sprite_background.height
+        }, 
+        (Rectangle) {
+            background->bg_pos1.x,
+            background->bg_pos1.y,
+            renderGetSize().x,
+            renderGetSize().y
+        }, 
+        Vector2Zero(), 
+        0.0f, 
+        WHITE
+    );
 }
 
 Vector2 renderGetSize() {
@@ -1226,15 +1419,15 @@ void debugRenderData() {
             stateMachineGetName(),
             GlobalState.Game.gameplay_time,
 
-            GlobalState.PlayerGlobals.player.position.x,
-            GlobalState.PlayerGlobals.player.position.y,
+            GlobalState.player.position.x,
+            GlobalState.player.position.y,
 
-            GlobalState.PlayerGlobals.player.velocity.x,
-            GlobalState.PlayerGlobals.player.velocity.y,
+            GlobalState.player.velocity.x,
+            GlobalState.player.velocity.y,
 
-            GlobalState.PlayerGlobals.player.game_over ? "false" : "true",
+            GlobalState.player.game_over ? "false" : "true",
             
-            GlobalState.PlayerGlobals.player.points
+            GlobalState.player.points
         ),
         4,
         4,
@@ -1249,8 +1442,8 @@ void debugRenderCollisions() {
     }
 
     for(int i = 0; i < OBSTACLE_CAPACITY - 1; i++) {
-        Obstacle* obstacle = &GlobalState.ObstacleGlobals.obstacle_list.list[i];
-        Obstacle* obstacle_next = &GlobalState.ObstacleGlobals.obstacle_list.list[i + 1];
+        Obstacle* obstacle = &GlobalState.obstacle_list.list[i];
+        Obstacle* obstacle_next = &GlobalState.obstacle_list.list[i + 1];
 
         Rectangle point0_rect = { 
             obstacle->point0.x - OBSTACLE_WIDTH / 2.0f, 
@@ -1310,97 +1503,9 @@ void debugRenderCollisions() {
         }
     }
 
-    Player* player = &GlobalState.PlayerGlobals.player;
+    Player* player = &GlobalState.player;
     Rectangle player_rect = { player->position.x - (player->physical_size.x / 2.0f), player->position.y - (player->physical_size.y / 2.0f), player->physical_size.x, player->physical_size.y };
     DrawRectangleLinesEx(player_rect, 1.0f, GREEN);
-}
-
-void gameInit() {
-    GlobalState.Game.gameplay_state_machine = STATE_START;
-
-    GlobalState.PlayerGlobals.player = playerInit(
-        (Vector2) { 
-            renderGetSize().x / 2.0f - 256.0f, 
-            renderGetSize().y / 2.0f 
-        }
-    );
-
-    GlobalState.PlayerGlobals.camera = (Camera2D) {
-        .offset = { renderGetSize().x / 2.0f, renderGetSize().y / 2.0f },
-        .target = { renderGetSize().x / 2.0f, renderGetSize().y / 2.0f},
-        .zoom = 1.0f
-    };
-
-    GlobalState.PlayerGlobals.player.particle_system = particleSystemInit(
-        &GlobalState.PlayerGlobals.player.position, 
-        0.05f,
-        2.0f, 
-        (Vector2) { -1.0f, 0.0f } 
-    );
-
-    GlobalState.ObstacleGlobals.obstacle_list = obstacleListInit();
-
-    GlobalState.Debug.render_data = false;
-    GlobalState.Debug.render_colliders = false;
-
-    GlobalState.Game.gameplay_time = 0.0f;
-    GlobalState.Game.resume_countdown = GAME_RESUME_TIME;
-    GlobalState.Game.quit = false;
-    GlobalState.Game.start_key_held = true;
-}
-
-void resourcesLoad(){
-    // player resources
-    GlobalState.Resources.player_sprite = LoadTexture("../res/graphics/player_sprite.png");
-
-    // collectible resources
-    GlobalState.Resources.collectible_sprite[0] = LoadTexture("../res/graphics/collectible_common.png");
-    GlobalState.Resources.collectible_sprite[1] = LoadTexture("../res/graphics/collectible_rare.png");
-    GlobalState.Resources.collectible_sprite[2] = LoadTexture("../res/graphics/collectible_legendary.png");
-
-    // particle resources
-    GlobalState.Resources.particle_sprite = LoadTexture("../res/graphics/particle_bubble.png");
-
-    GlobalState.Resources.game_font_default = LoadFontEx(
-        "../res/fonts/Fredoka/static/Fredoka-Bold.ttf",
-        32,
-        0,
-        256
-    );  
-
-    GlobalState.Resources.game_font_large = LoadFontEx(
-        "../res/fonts/Fredoka/static/Fredoka-Bold.ttf",
-        96,
-        0,
-        256
-    );     
-
-    SetTextureFilter(GlobalState.Resources.player_sprite, TEXTURE_FILTER_BILINEAR);
-
-    SetTextureFilter(GlobalState.Resources.collectible_sprite[0], TEXTURE_FILTER_BILINEAR);
-    SetTextureFilter(GlobalState.Resources.collectible_sprite[1], TEXTURE_FILTER_BILINEAR);
-    SetTextureFilter(GlobalState.Resources.collectible_sprite[2], TEXTURE_FILTER_BILINEAR);
-
-    SetTextureFilter(GlobalState.Resources.particle_sprite, TEXTURE_FILTER_BILINEAR);
-
-    SetTextureFilter(GlobalState.Resources.game_font_default.texture, TEXTURE_FILTER_BILINEAR);
-    SetTextureFilter(GlobalState.Resources.game_font_large.texture, TEXTURE_FILTER_BILINEAR);
-}
-
-void resourcesUnload() {
-    // unloading player resources
-    UnloadTexture(GlobalState.Resources.player_sprite);
-
-    // unloading collectible resources
-    for(int i = 0; i < 3; i++) {
-        UnloadTexture(GlobalState.Resources.collectible_sprite[i]);
-    }
-
-    // unloading particle resources
-    UnloadTexture(GlobalState.Resources.particle_sprite);
-
-    UnloadFont(GlobalState.Resources.game_font_default);
-    UnloadFont(GlobalState.Resources.game_font_large);
 }
 
 internal bool collisionCheckRectLine(Rectangle rect, Vector2 line_start, Vector2 line_end) {
