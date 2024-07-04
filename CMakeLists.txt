@@ -100,6 +100,27 @@ target_include_directories(${PROJECT_NAME} PUBLIC ${INCLUDE_DIRECTORIES})
 # Section: Compiler & Linker options
 # ----------------------------------
 
+if (${PLATFORM} STREQUAL "Web")
+
+    # WEB: Telling the Emscirpten how to link our final program.
+    # -s USE_GLFW=3 - application uses GLFW 3.x, so link to it.
+    # -s WASM=1 - compile to webassembly.
+    # -s TOTAL_MEMORY=67108864 - specify a heap size in bytes (default: 67108864 -> 64mb)
+    # -s FORCE_FILESYSTEM=1 - force filesystem creation to load/save files data.
+    # --shell-file ./_deps/raylib-src/src/minshell.html - all WASM applications need a shell. Here we're providing a minimal shell that comes with raylib (can be found in: raylib/src/minshell.html).
+    # --preload-file ../res - load an assets from the specified path and store them as ".data" file (default: ../res).
+    # --profiling - enables code profiling for your project.
+    # (Sources: https://github.com/raysan5/raylib/wiki/Working-for-Web-(HTML5)#5-compile-raylib-game-for-web, https://emscripten.org/index.html)
+    set(
+        CMAKE_EXE_LINKER_FLAGS 
+        "${CMAKE_EXE_LINKER_FLAGS} -Wall -Wextra -Os -s USE_GLFW=3 -s WASM=1 -s TOTAL_MEMORY=67108864 -s FORCE_FILESYSTEM=1 --shell-file ./_deps/raylib-src/src/minshell.html --preload-file ../res --profiling"
+    )
+
+    # WEB: Setting the target executable's suffix (for Web: *.html).
+    set_target_properties(${PROJECT_NAME} PROPERTIES SUFFIX ".html")
+
+endif()
+
 if (LINUX)
 
     # LINUX: Telling the linker to statically link the libgcc and libstdc++ to out project.

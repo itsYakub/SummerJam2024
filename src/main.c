@@ -60,14 +60,20 @@
 #define OBSTACLE_UPPER_COLOR 0x7f708aff
 #define OBSTACLE_LOWER_COLOR 0xf9c22bff
 
-#define RESOURCES_SPRITE_PLAYER GlobalState.Resources.sprite_player
-#define RESOURCES_SPRITE_COLLECTIBLES GlobalState.Resources.sprite_collectibles
+#define RESOURCES_SPRITE_PLAYER GlobalState.Resources.texture_player
+#define RESOURCES_SPRITE_COLLECTIBLES GlobalState.Resources.texture_collectibles
 #define RESOURCES_FONT_DEFAULT GlobalState.Resources.font_game_default
 #define RESOURCES_FONT_LARGE GlobalState.Resources.font_game_large
 
 #define PARTICLES_CAPACITY 128
 #define PARTICLE_GRAVITY_X 0.0
 #define PARTICLE_GRAVITY_Y -2.0f
+
+#define MUSIC_VOLUME_GAME_START 1.0f
+#define MUSIC_VOLUME_GAMEPLAY 0.6f
+#define MUSIC_VOLUME_GAME_PAUSED 0.2f
+#define MUSIC_VOLUME_GAME_OVER 0.1f
+#define MUSIC_VOLUME_MUTED 0.0f
 
 #define MATH_MIN(a, b) { a < b ? a : b }
 
@@ -85,6 +91,7 @@ void timerRestart(Timer* timer);
 void timerReset(Timer* timer, float time);
 
 typedef enum {
+    STATE_WELCOME_SCREEN,
     STATE_START,
     STATE_GAMEPLAY,
     STATE_GAMEOVER,
@@ -235,16 +242,20 @@ struct {
     } Debug;
 
     struct {
-        Texture2D sprite_background;
-        Texture2D sprite_player;
-        Texture2D sprite_collectibles[3];
-        Texture2D sprite_particle_bubble;
+        Texture2D texture_background;
+        Texture2D texture_player;
+        Texture2D texture_collectibles[3];
+        Texture2D texture_particle_bubble;
+        Texture2D texture_raylib_logo;
 
         Font font_game_default;
         Font font_game_large;
 
         Sound sound_particle_bubble;
         Sound sound_collectible_pickup;
+
+        Music music_background;
+        float music_background_volume;
     } Resources;
 } GlobalState;
 
@@ -286,8 +297,13 @@ int main(int argc, char** argv) {
     GlobalState.Game.render_texture = LoadRenderTexture(WIDTH, HEIGHT);
     SetTextureFilter(GlobalState.Game.render_texture.texture, TEXTURE_FILTER_BILINEAR);
 
+    float timer_welcome_screen_time = 5.0f;
+    Timer timer_welcome_screen = timerInit(timer_welcome_screen_time);
+
     resourcesLoad();
     gameInit();
+
+    stateMachineSet(STATE_WELCOME_SCREEN);
 
     while(!WindowShouldClose() && !GlobalState.Game.quit) {
         // Update your game logic here...
@@ -297,18 +313,42 @@ int main(int argc, char** argv) {
             GlobalState.Debug.render_data = !GlobalState.Debug.render_data;
             GlobalState.Debug.render_colliders = !GlobalState.Debug.render_colliders;
         }
+
+        // Window-scaling for render texture
+        // (For how it works check out the raylib's exaples: https://www.raylib.com/examples.html)
         float scale = MATH_MIN(GetScreenWidth() / renderGetSize().x, GetScreenHeight() / renderGetSize().y);
         SetMouseOffset((GetScreenWidth() - (renderGetSize().x * scale)) * 0.5f * -1.0, (GetScreenHeight() - (renderGetSize().y * scale)) * 0.5f * -1.0);
         SetMouseScale(1 / scale, 1 / scale);
+        
+        SetMusicVolume(GlobalState.Resources.music_background, GlobalState.Resources.music_background_volume);
+        UpdateMusicStream(GlobalState.Resources.music_background);
 
         // State-Dependent update loop...
         switch (GlobalState.Game.gameplay_state_machine) {
+            case STATE_WELCOME_SCREEN: {
+                timer_welcome_screen_time -= GetFrameTime();
+                timerProceed(&timer_welcome_screen);
+
+                if(timerFinished(&timer_welcome_screen) || GetKeyPressed()) {
+                    stateMachineSet(STATE_START);
+                }
+
+                GlobalState.Resources.music_background_volume = Lerp(GlobalState.Resources.music_background_volume, MUSIC_VOLUME_GAME_START, GetFrameTime());
+
+            } break;
+
             case STATE_START: {
 
                 if(playerInputGetPress()) {
                     playerSetVelocity((Vector2) { 0.0f, -PLAYER_GRAVITY_Y * 16.0f * GetFrameTime()});
                     stateMachineSet(STATE_GAMEPLAY);
                 }
+
+                if(IsKeyPressed(KEY_ESCAPE)) {
+                    GlobalState.Game.quit = true;
+                }
+
+                GlobalState.Resources.music_background_volume = Lerp(GlobalState.Resources.music_background_volume, MUSIC_VOLUME_GAME_START, GetFrameTime());
 
             } break;
 
@@ -327,28 +367,34 @@ int main(int argc, char** argv) {
                 if(GlobalState.player.game_over) {
                     stateMachineSet(STATE_GAMEOVER);
                 }
+
+                GlobalState.Resources.music_background_volume = Lerp(GlobalState.Resources.music_background_volume, MUSIC_VOLUME_GAMEPLAY, GetFrameTime());
+
             } break;
 
             case STATE_GAMEOVER: {
-                if(IsKeyPressed(KEY_ESCAPE)) {
-                    GlobalState.Game.quit = true;
-                }
-
-                if(IsKeyPressed(KEY_ENTER)) {
+                if(GetKeyPressed() || IsMouseButtonPressed(MOUSE_BUTTON_LEFT) || IsMouseButtonPressed(MOUSE_RIGHT_BUTTON) || GetTouchPointCount() > 0) {
+                    stateMachineSet(STATE_START);
                     gameInit();
                 }
+
+                GlobalState.Resources.music_background_volume = Lerp(GlobalState.Resources.music_background_volume, MUSIC_VOLUME_GAME_OVER, GetFrameTime());
+
             } break;
 
             case STATE_PAUSE: {
                 if(IsKeyPressed(KEY_ESCAPE)) {
                     stateMachineSet(STATE_RESUME);
                 }
+
+                GlobalState.Resources.music_background_volume = Lerp(GlobalState.Resources.music_background_volume, MUSIC_VOLUME_GAME_PAUSED, GetFrameTime());
+
             } break;
 
             case STATE_RESUME: {
                 GlobalState.Game.resume_countdown -= GetFrameTime();
                 
-                if((GlobalState.Game.resume_countdown <= 0.0f) || playerInputGetDown()) {
+                if((GlobalState.Game.resume_countdown <= 0.0f) || GetKeyPressed() || IsMouseButtonPressed(MOUSE_BUTTON_LEFT) || IsMouseButtonPressed(MOUSE_RIGHT_BUTTON) || GetTouchPointCount() > 0) {
                     GlobalState.Game.resume_countdown = GAME_RESUME_TIME;
                     stateMachineSet(STATE_GAMEPLAY);
                 }
@@ -374,6 +420,56 @@ int main(int argc, char** argv) {
 
         // State-dependent rendering...
         switch (GlobalState.Game.gameplay_state_machine) {
+            case STATE_WELCOME_SCREEN: {
+                const char* text0 = "Made with raylib!";
+                Vector2 text0_size = MeasureTextEx(GetFontDefault(), text0, TEXT_FONT_SIZE, TEXT_FONT_SPACING);
+
+                DrawRectangle(
+                    0, 
+                    0, 
+                    renderGetSize().x, 
+                    renderGetSize().y, 
+                    (Color) {
+                        245,
+                        245,
+                        245,
+                        timer_welcome_screen_time < 1.0f ? Lerp(0, 255, timer_welcome_screen_time) : 255
+                    }
+                );
+
+                DrawTexturePro(
+                    GlobalState.Resources.texture_raylib_logo, 
+                    (Rectangle) { 0, 0, GlobalState.Resources.texture_raylib_logo.width, GlobalState.Resources.texture_raylib_logo.height }, 
+                    (Rectangle) { renderGetSize().x / 2.0f, renderGetSize().y / 2.0f, GlobalState.Resources.texture_raylib_logo.width, GlobalState.Resources.texture_raylib_logo.height }, 
+                    (Vector2) { GlobalState.Resources.texture_raylib_logo.width / 2.0f, GlobalState.Resources.texture_raylib_logo.height / 2.0f }, 
+                    0.0f,
+                    (Color) {
+                        255,
+                        255,
+                        255,
+                        timer_welcome_screen_time < 1.0f ? Lerp(0, 255, timer_welcome_screen_time) : 255
+                    }
+                );
+
+                DrawTextPro(
+                    GetFontDefault(), 
+                    text0, 
+                    (Vector2) { renderGetSize().x / 2.0f, renderGetSize().y / 2.0f + 256}, 
+                    Vector2Divide(text0_size, (Vector2) { 2.0f, 2.0f } ), 
+                    0.0f, 
+                    TEXT_FONT_SIZE, 
+                    TEXT_FONT_SPACING, 
+                    (Color) {
+                        0,
+                        0,
+                        0,
+                        timer_welcome_screen_time < 1.0f ? Lerp(0, 255, timer_welcome_screen_time) : 255
+                    }
+                );
+
+
+            } break;
+
             case STATE_START: {
                 const char* text0 = GAME_TITLE;
                 const char* text1 = "Press SPACE or LBM to start";
@@ -430,7 +526,7 @@ int main(int argc, char** argv) {
 
                 const char* text0 = "Game Over!";
                 const char* text1 = TextFormat("> Total Time: %.02fs\n> Total Score: %i", GlobalState.Game.gameplay_time, GlobalState.player.points);
-                const char* text2 = "Press ENTER to RESTART or ESCAPE to QUIT...";
+                const char* text2 = "Press ANY KEY to RESTART...";
 
                 Vector2 text0_size = MeasureTextEx(RESOURCES_FONT_LARGE, text0, TEXT_FONT_LARGE_SIZE, TEXT_FONT_SPACING);
                 Vector2 text1_size = MeasureTextEx(RESOURCES_FONT_DEFAULT, text1, TEXT_FONT_SIZE, TEXT_FONT_SPACING);
@@ -578,8 +674,6 @@ int main(int argc, char** argv) {
 }
 
 void gameInit() {
-    GlobalState.Game.gameplay_state_machine = STATE_START;
-
     GlobalState.player = playerInit(
         (Vector2) { 
             renderGetSize().x / 2.0f - 256.0f, 
@@ -610,22 +704,27 @@ void gameInit() {
     GlobalState.Game.resume_countdown = GAME_RESUME_TIME;
     GlobalState.Game.quit = false;
     GlobalState.Game.start_key_held = true;
+
+    PlayMusicStream(GlobalState.Resources.music_background);
 }
 
-void resourcesLoad(){
+void resourcesLoad() {
     // background resource
-    GlobalState.Resources.sprite_background = LoadTexture("../res/graphics/game_background.png");
+    GlobalState.Resources.texture_background = LoadTexture("../res/graphics/game_background.png");
 
     // player resources
-    GlobalState.Resources.sprite_player = LoadTexture("../res/graphics/player_sprite.png");
+    GlobalState.Resources.texture_player = LoadTexture("../res/graphics/player_sprite.png");
 
     // collectible resources
-    GlobalState.Resources.sprite_collectibles[0] = LoadTexture("../res/graphics/collectible_common.png");
-    GlobalState.Resources.sprite_collectibles[1] = LoadTexture("../res/graphics/collectible_rare.png");
-    GlobalState.Resources.sprite_collectibles[2] = LoadTexture("../res/graphics/collectible_legendary.png");
+    GlobalState.Resources.texture_collectibles[0] = LoadTexture("../res/graphics/collectible_common.png");
+    GlobalState.Resources.texture_collectibles[1] = LoadTexture("../res/graphics/collectible_rare.png");
+    GlobalState.Resources.texture_collectibles[2] = LoadTexture("../res/graphics/collectible_legendary.png");
 
     // particle resources
-    GlobalState.Resources.sprite_particle_bubble = LoadTexture("../res/graphics/particle_bubble.png");
+    GlobalState.Resources.texture_particle_bubble = LoadTexture("../res/graphics/particle_bubble.png");
+
+    // raylib logo: https://github.com/raysan5/raylib/blob/master/logo/raylib_256x256.png
+    GlobalState.Resources.texture_raylib_logo = LoadTexture("../res/graphics/raylib_256x256.png");
 
     // font resources
     GlobalState.Resources.font_game_default = LoadFontEx(
@@ -645,17 +744,21 @@ void resourcesLoad(){
     // sound resources
     GlobalState.Resources.sound_particle_bubble = LoadSound("../res/sfx/sfx_bubble.mp3");
     GlobalState.Resources.sound_collectible_pickup = LoadSound("../res/sfx/sfx_collectible_3.wav");
+    
+    // Source: https://sonic.fandom.com/wiki/Aquarium_Park
+    GlobalState.Resources.music_background = LoadMusicStream("../res/sfx/Aquarium_Park_Act_1.wav");
+    GlobalState.Resources.music_background_volume = 0.0f;
 
     // Setting up the filtering for the graphical res...
-    SetTextureFilter(GlobalState.Resources.sprite_background, TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(GlobalState.Resources.texture_background, TEXTURE_FILTER_BILINEAR);
 
-    SetTextureFilter(GlobalState.Resources.sprite_player, TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(GlobalState.Resources.texture_player, TEXTURE_FILTER_BILINEAR);
 
-    SetTextureFilter(GlobalState.Resources.sprite_collectibles[0], TEXTURE_FILTER_BILINEAR);
-    SetTextureFilter(GlobalState.Resources.sprite_collectibles[1], TEXTURE_FILTER_BILINEAR);
-    SetTextureFilter(GlobalState.Resources.sprite_collectibles[2], TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(GlobalState.Resources.texture_collectibles[0], TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(GlobalState.Resources.texture_collectibles[1], TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(GlobalState.Resources.texture_collectibles[2], TEXTURE_FILTER_BILINEAR);
 
-    SetTextureFilter(GlobalState.Resources.sprite_particle_bubble, TEXTURE_FILTER_BILINEAR);
+    SetTextureFilter(GlobalState.Resources.texture_particle_bubble, TEXTURE_FILTER_BILINEAR);
 
     SetTextureFilter(GlobalState.Resources.font_game_default.texture, TEXTURE_FILTER_BILINEAR);
     SetTextureFilter(GlobalState.Resources.font_game_large.texture, TEXTURE_FILTER_BILINEAR);
@@ -663,18 +766,21 @@ void resourcesLoad(){
 
 void resourcesUnload() {
     // unload background resource
-    UnloadTexture(GlobalState.Resources.sprite_background);
+    UnloadTexture(GlobalState.Resources.texture_background);
 
     // unloading player resources
-    UnloadTexture(GlobalState.Resources.sprite_player);
+    UnloadTexture(GlobalState.Resources.texture_player);
 
     // unloading collectible resources
     for(int i = 0; i < 3; i++) {
-        UnloadTexture(GlobalState.Resources.sprite_collectibles[i]);
+        UnloadTexture(GlobalState.Resources.texture_collectibles[i]);
     }
 
     // unloading particle resources
-    UnloadTexture(GlobalState.Resources.sprite_particle_bubble);
+    UnloadTexture(GlobalState.Resources.texture_particle_bubble);
+
+    // unloading raylib logo
+    UnloadTexture(GlobalState.Resources.texture_raylib_logo);
 
     // unloading fonts
     UnloadFont(GlobalState.Resources.font_game_default);
@@ -683,6 +789,8 @@ void resourcesUnload() {
     // unloading sounds
     UnloadSound(GlobalState.Resources.sound_particle_bubble);
     UnloadSound(GlobalState.Resources.sound_collectible_pickup);
+
+    UnloadMusicStream(GlobalState.Resources.music_background);
 }
 
 Timer timerInit(float time) {
@@ -710,11 +818,12 @@ void timerReset(Timer* timer, float time) {
 
 const char* stateMachineGetName() {
     switch (GlobalState.Game.gameplay_state_machine) {
-        case STATE_START:       return "STATE_START";
-        case STATE_GAMEPLAY:    return "STATE_GAMEPLAY";
-        case STATE_GAMEOVER:    return "STATE_GAMEOVER";
-        case STATE_PAUSE:       return "STATE_PAUSE";
-        case STATE_RESUME:      return "STATE_RESUME";
+        case STATE_WELCOME_SCREEN:      return "STATE_WELCOME_SCREEN";
+        case STATE_START:               return "STATE_START";
+        case STATE_GAMEPLAY:            return "STATE_GAMEPLAY";
+        case STATE_GAMEOVER:            return "STATE_GAMEOVER";
+        case STATE_PAUSE:               return "STATE_PAUSE";
+        case STATE_RESUME:              return "STATE_RESUME";
     }
 }
 
@@ -803,18 +912,18 @@ void particleSystemRender(ParticleSystem* particle_system) {
         }
 
         DrawTexturePro(
-            GlobalState.Resources.sprite_particle_bubble, 
+            GlobalState.Resources.texture_particle_bubble, 
             (Rectangle) {
                 0.0f,
                 0.0f,
-                GlobalState.Resources.sprite_particle_bubble.width,
-                GlobalState.Resources.sprite_particle_bubble.height
+                GlobalState.Resources.texture_particle_bubble.width,
+                GlobalState.Resources.texture_particle_bubble.height
             }, 
             (Rectangle) {
                 particle_system->particles[particle_index].position.x,
                 particle_system->particles[particle_index].position.y,
-                GlobalState.Resources.sprite_particle_bubble.width,
-                GlobalState.Resources.sprite_particle_bubble.height
+                GlobalState.Resources.texture_particle_bubble.width,
+                GlobalState.Resources.texture_particle_bubble.height
             }, 
             Vector2Zero(), 
             0.0f, 
@@ -828,8 +937,8 @@ Player playerInit(Vector2 position) {
         .position = position,
         .velocity = Vector2Zero(),
         .physical_size = { 
-            GlobalState.Resources.sprite_player.width / 2.0f,
-            GlobalState.Resources.sprite_player.width / 2.0f,
+            GlobalState.Resources.texture_player.width / 2.0f,
+            GlobalState.Resources.texture_player.width / 2.0f,
         },
 
         .sprite_rotation = 0.0f,
@@ -898,20 +1007,20 @@ void playerRender() {
     particleSystemRender(&player->particle_system);
 
     DrawTexturePro(
-        GlobalState.Resources.sprite_player, 
+        GlobalState.Resources.texture_player, 
         (Rectangle) {
             0.0f,
             0.0f,
-            GlobalState.Resources.sprite_player.width,
-            GlobalState.Resources.sprite_player.height
+            GlobalState.Resources.texture_player.width,
+            GlobalState.Resources.texture_player.height
         }, 
         (Rectangle) {
             player->position.x,
             player->position.y,
-            GlobalState.Resources.sprite_player.width,
-            GlobalState.Resources.sprite_player.height
+            GlobalState.Resources.texture_player.width,
+            GlobalState.Resources.texture_player.height
         }, 
-        Vector2Divide((Vector2) { GlobalState.Resources.sprite_player.width, GlobalState.Resources.sprite_player.height }, (Vector2) { 2.0f, 2.0f }), 
+        Vector2Divide((Vector2) { GlobalState.Resources.texture_player.width, GlobalState.Resources.texture_player.height }, (Vector2) { 2.0f, 2.0f }), 
         player->sprite_rotation, 
         WHITE
     );
@@ -919,24 +1028,24 @@ void playerRender() {
 
 void playerRenderScore(Vector2 position, Vector2 text_offset) {
     Player* player = &GlobalState.player;
-    int sprite_width = GlobalState.Resources.sprite_collectibles[0].width + text_offset.x;
-    int sprite_height = GlobalState.Resources.sprite_collectibles[0].height + text_offset.y;
+    int sprite_width = GlobalState.Resources.texture_collectibles[0].width + text_offset.x;
+    int sprite_height = GlobalState.Resources.texture_collectibles[0].height + text_offset.y;
 
     // rendering all the sprites in the column
     for(int i = 0; i < 3; i++) {
         DrawTexturePro(
-            GlobalState.Resources.sprite_collectibles[i], 
+            GlobalState.Resources.texture_collectibles[i], 
             (Rectangle) {
                 0.0f,
                 0.0f,
-                GlobalState.Resources.sprite_collectibles[0].width,
-                GlobalState.Resources.sprite_collectibles[0].height
+                GlobalState.Resources.texture_collectibles[0].width,
+                GlobalState.Resources.texture_collectibles[0].height
             }, 
             (Rectangle) {
                 position.x,
                 position.y + sprite_height * i,
-                GlobalState.Resources.sprite_collectibles[0].width,
-                GlobalState.Resources.sprite_collectibles[0].height
+                GlobalState.Resources.texture_collectibles[0].width,
+                GlobalState.Resources.texture_collectibles[0].height
             }, 
             Vector2Zero(), 
             0.0f, 
@@ -1134,12 +1243,12 @@ void collectibleRender(Obstacle* obstacle) {
     }
 
     DrawTexturePro(
-        GlobalState.Resources.sprite_collectibles[obstacle->collectible.collectible_rarity],
+        GlobalState.Resources.texture_collectibles[obstacle->collectible.collectible_rarity],
         (Rectangle) {
             0,
             0,
-            GlobalState.Resources.sprite_collectibles[obstacle->collectible.collectible_rarity].width,
-            GlobalState.Resources.sprite_collectibles[obstacle->collectible.collectible_rarity].height
+            GlobalState.Resources.texture_collectibles[obstacle->collectible.collectible_rarity].width,
+            GlobalState.Resources.texture_collectibles[obstacle->collectible.collectible_rarity].height
         },
         (Rectangle) {
             obstacle->collectible.position.x,
@@ -1356,12 +1465,12 @@ void backgroundUpdate(Background* background) {
 
 void backgroundRender(Background* background) {
     DrawTexturePro(
-        GlobalState.Resources.sprite_background, 
+        GlobalState.Resources.texture_background, 
         (Rectangle) {
             0.0f,
             0.0f,
-            GlobalState.Resources.sprite_background.width,
-            GlobalState.Resources.sprite_background.height
+            GlobalState.Resources.texture_background.width,
+            GlobalState.Resources.texture_background.height
         }, 
         (Rectangle) {
             background->bg_pos0.x,
@@ -1375,12 +1484,12 @@ void backgroundRender(Background* background) {
     );
 
     DrawTexturePro(
-        GlobalState.Resources.sprite_background, 
+        GlobalState.Resources.texture_background, 
         (Rectangle) {
             0.0f,
             0.0f,
-            GlobalState.Resources.sprite_background.width,
-            GlobalState.Resources.sprite_background.height
+            GlobalState.Resources.texture_background.width,
+            GlobalState.Resources.texture_background.height
         }, 
         (Rectangle) {
             background->bg_pos1.x,

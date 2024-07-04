@@ -1,12 +1,12 @@
 <div align="Center">
 
-# Simple Raylib Template 📜
+# Floppy Submarine
 
 </div>
 
 ## 🔎 Overview
 
-This is the simple template for raylib games and applications, written in C.
+This is my entry for **[Summer Jam 2024](https://itch.io/jam/summer-jam-2024)**! Created using [`raysan5/raylib`](https://github.com/raysan5/raylib) and my own [`Simple Raylib Template`](https://github.com/itsYakub/Simple-Raylib-Template).
 
 ## Prerequesites 📝
 - **[Git;](https://git-scm.com/)**
@@ -14,7 +14,6 @@ This is the simple template for raylib games and applications, written in C.
 - **[Build system of your choosing;](https://cmake.org/cmake/help/latest/manual/cmake-generators.7.html#id7)**
 
 ## Setup 🛠️
-- Create a Github repository from this template or clone this repo directly from Github (up to you!);
 - In the projects directory:
     - Create and enter your final binary directory:
     ```console
@@ -41,4 +40,4 @@ This is the simple template for raylib games and applications, written in C.
 - **[licenses/license-templates](https://github.com/licenses/license-templates)**
 
 ## Licence❕
-This template is under the [MIT Licence](https://github.com/itsYakub/Simple-Raylib-Template/blob/main/LICENCE), but you can freely modify it, change it to whatever suits your needs!
+This template is under the [MIT Licence](./LICENCE).
